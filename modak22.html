@@ -1,0 +1,212 @@
+<!-- Save this as index.html or similar -->
+<!DOCTYPE html>
+<html lang="en" class="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI-Based Rockfall Prediction and Alert System</title>
+
+  <!-- Tailwind + FontAwesome -->
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+
+  <style>
+    /* Dark Mode Adjustments */
+    .dark { background-color:#111827; color:#d1d5db }
+    .dark .text-gray-900 { color:#d1d5db }
+    .dark .text-gray-700 { color:#9ca3af }
+    .dark .bg-white { background-color:#1f2937 }
+    .dark .border-gray-200 { border-color:#374151 }
+    .dark .bg-gray-100 { background-color:#374151 }
+
+    /* Map + Panel styling */
+    :root{--bg:#0b1220;--card:#101a2d;--muted:#8aa0c7;--accent:#4cc9f0;--ok:#22c55e;--warn:#f59e0b;--bad:#ef4444}
+    #map{height: calc(100vh - 200px);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    .panel{background:var(--card);border-radius:16px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.25);display:flex;flex-direction:column;gap:12px;color:#e5edff}
+    .row{display:flex;gap:8px}
+    input,button{border:1px solid #253552;background:#0b1528;color:#e5edff;padding:10px 12px;border-radius:12px;font-size:14px}
+    button.primary{background:linear-gradient(90deg,#2563eb,#06b6d4);border:none}
+    .pill{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;font-size:12px;border:1px solid #274060;color:#c8dcff}
+    .kpi{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+    .kpi .card{background:#0b1528;border:1px solid #20314d;border-radius:14px;padding:10px}
+    .risk{display:flex;align-items:center;gap:8px}
+    .risk .dot{width:10px;height:10px;border-radius:999px}
+    .risk.low .dot{background:var(--ok)}
+    .risk.medium .dot{background:var(--warn)}
+    .risk.high .dot{background:var(--bad)}
+    .legend{position:absolute;bottom:12px;left:12px;background:#0b1528;border:1px solid #20314d;color:#c8dcff;border-radius:10px;padding:8px 10px;font-size:12px;z-index:400}
+    .legend .item{display:flex;align-items:center;gap:6px;margin:4px 0}
+    .legend .swatch{width:10px;height:10px;border-radius:999px}
+    .legend .swatch.low{background:var(--ok)}
+    .legend .swatch.medium{background:var(--warn)}
+    .legend .swatch.high{background:var(--bad)}
+    .note{font-size:12px;color:#9fb3da}
+  </style>
+</head>
+
+<body class="font-sans antialiased text-gray-900 bg-white transition-colors duration-300">
+<div class="min-h-screen flex flex-col">
+
+  <!-- NAVBAR -->
+  <nav class="bg-gray-800 text-white p-4 shadow-md sticky top-0 z-50">
+    <div class="container mx-auto flex justify-between items-center">
+      <a href="#" class="text-2xl font-bold text-green-400">Project Avighna - अविघ्न</a>
+      <div class="hidden md:flex space-x-6">
+        <a href="#home" class="hover:text-green-300">Home</a>
+        <a href="#dashboard" class="hover:text-green-300">Dashboard</a>
+        <a href="#about" class="hover:text-green-300">About</a>
+        <a href="#contact" class="hover:text-green-300">Contact</a>
+      </div>
+      <div class="flex items-center space-x-4">
+        <button id="theme-toggle" class="p-2 rounded-md hover:bg-gray-700"><i class="fas fa-sun text-xl" id="theme-icon"></i></button>
+        <button id="menu-button" class="md:hidden p-2 rounded-md hover:bg-gray-700"><i class="fas fa-bars text-xl"></i></button>
+      </div>
+    </div>
+  </nav>
+
+  <main class="flex-grow">
+    <!-- DASHBOARD -->
+    <section id="dashboard" class="py-16 md:py-24 bg-white dark:bg-gray-900">
+      <div class="container mx-auto px-4">
+        <h2 class="text-3xl md:text-5xl font-bold text-center mb-12 text-gray-800 dark:text-gray-200">Interactive Dashboard</h2>
+        <p class="text-xl text-center max-w-3xl mx-auto mb-16 text-gray-700 dark:text-gray-300">Explore live data and AI-powered risk predictions.</p>
+
+        <!-- Dashboard Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <!-- Sidebar Panel -->
+          <aside class="panel lg:col-span-1">
+            <div class="row">
+              <input id="search" placeholder="Search mine/place (e.g., 'Saswad Quarry')" />
+              <button type="button" id="go" class="primary">Search</button>
+            </div>
+            <div class="text-sm text-gray-400">Tip: Click on the map to fetch live data.</div>
+
+            <div id="location" class="pill">📍 <span id="loc-text">Waiting for a location…</span></div>
+
+            <div class="kpi">
+              <div class="card"><div class="text-sm">Rain (mm/hr)</div><div id="rainNow" class="text-2xl font-bold">—</div></div>
+              <div class="card"><div class="text-sm">24h Rain (mm)</div><div id="rain24" class="text-2xl font-bold">—</div></div>
+              <div class="card"><div class="text-sm">Wind (m/s)</div><div id="wind" class="text-2xl font-bold">—</div></div>
+              <div class="card"><div class="text-sm">Slope (°)</div><div id="slope" class="text-2xl font-bold">—</div></div>
+            </div>
+
+            <div class="card">
+              <div class="text-sm">Risk Score</div>
+              <div class="flex items-center gap-2 mt-2">
+                <div id="riskBadge" class="risk"><div class="dot"></div><div id="riskLabel" class="font-bold">—</div></div>
+                <div id="riskScore" class="text-2xl font-bold ml-auto">—</div>
+              </div>
+              <div id="advice" class="note mt-2">—</div>
+            </div>
+          </aside>
+
+          <!-- Map Area -->
+          <main class="relative lg:col-span-2">
+            <div id="map"></div>
+            <div class="legend">
+              <div class="font-bold mb-2">Risk Legend</div>
+              <div class="item"><span class="swatch low"></span> Low</div>
+              <div class="item"><span class="swatch medium"></span> Medium</div>
+              <div class="item"><span class="swatch high"></span> High</div>
+            </div>
+          </main>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="bg-gray-800 text-white py-8 text-center">
+    <p>&copy; 2023 AI-Based Rockfall Prediction. All rights reserved.</p>
+  </footer>
+</div>
+
+<!-- Leaflet + Main Script -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+ integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+  const map = L.map('map').setView([18.5204, 73.8567], 7);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18, attribution: '&copy; OpenStreetMap'
+  }).addTo(map);
+  let marker = null;
+
+  const setText = (id, txt) => document.getElementById(id).textContent = txt;
+  const fmt = (n, d=1)=> (n==null||isNaN(n))?'—':Number(n).toFixed(d);
+
+  function setRiskBadge(level){
+    const badge = document.getElementById('riskBadge');
+    badge.classList.remove('low','medium','high');
+    badge.classList.add(level);
+    document.getElementById('riskLabel').textContent = level.charAt(0).toUpperCase()+level.slice(1);
+  }
+
+  async function getWeather(lat,lon){
+    const params = new URLSearchParams({
+      latitude: lat, longitude: lon,
+      hourly: 'precipitation,windspeed_10m',
+      current: 'precipitation,windspeed_10m',
+      timezone:'auto', past_days:1
+    });
+    const res = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
+    return res.json();
+  }
+
+  function sumLast24h(values){return values.slice(-24).reduce((a,b)=>a+(b||0),0)}
+  function latest(values){return values?.[values.length-1]??null}
+
+  function computeRisk({rainNow,rain24,wind,slope}){
+    const slopeScore=Math.min(1,Math.max(0,(slope-10)/25));
+    const rain24Score=Math.min(1,rain24/60);
+    const rainNowScore=Math.min(1,rainNow/8);
+    const windScore=Math.min(1,wind/15);
+    const score=100*(0.4*slopeScore+0.3*rain24Score+0.15*rainNowScore+0.15*windScore);
+    let level='low'; if(score>=65)level='high'; else if(score>=35)level='medium';
+    let advice = (level==='high')?'HIGH: Restrict access.'
+                :(level==='medium')?'MEDIUM: Proceed with caution.'
+                :'LOW: Normal operations.';
+    return {score:Math.round(score),level,advice};
+  }
+
+  function addMarker(lat,lon,name,risk,facts){
+    if(marker) map.removeLayer(marker);
+    const color=risk.level==='high'?'#ef4444':risk.level==='medium'?'#f59e0b':'#22c55e';
+    marker=L.circleMarker([lat,lon],{radius:10,color,fillColor:color,fillOpacity:.5}).addTo(map);
+    marker.bindPopup(`<b>${name}</b><br/>Risk: ${risk.level.toUpperCase()} (${risk.score})<br/>
+    Rain: ${fmt(facts.rainNow)} mm/hr<br/>24h Rain: ${fmt(facts.rain24)} mm<br/>Wind: ${fmt(facts.wind)} m/s<br/>Slope: ${fmt(facts.slope)}°`).openPopup();
+  }
+
+  async function updateAll(lat,lon,name){
+    setText('loc-text',`${name} (${lat.toFixed(2)},${lon.toFixed(2)})`);
+    map.setView([lat,lon],12);
+    const weather=await getWeather(lat,lon);
+    const rainNow=weather.current?.precipitation ?? latest(weather.hourly?.precipitation);
+    const rain24=sumLast24h(weather.hourly?.precipitation||[]);
+    const wind=weather.current?.windspeed_10m ?? latest(weather.hourly?.windspeed_10m);
+    const slope=20; // dummy
+    setText('rainNow',fmt(rainNow));
+    setText('rain24',fmt(rain24));
+    setText('wind',fmt(wind));
+    setText('slope',fmt(slope));
+    const risk=computeRisk({rainNow:+rainNow||0,rain24:+rain24||0,wind:+wind||0,slope});
+    setRiskBadge(risk.level);
+    setText('riskScore',risk.score);
+    setText('advice',risk.advice);
+    addMarker(lat,lon,name,risk,{rainNow,rain24,wind,slope});
+  }
+
+  document.getElementById('go').onclick=()=>{
+    const q=document.getElementById('search').value.toLowerCase();
+    if(q.includes('saswad'))updateAll(18.356,74.005,'Saswad Quarry');
+    else if(q.includes('nagpur'))updateAll(21.1458,79.0882,'Nagpur Mine');
+    else updateAll(18.52,73.8567,'Pune');
+  };
+
+  map.on('click',e=>updateAll(e.latlng.lat,e.latlng.lng,'Custom Point'));
+  updateAll(18.52,73.8567,'Pune');
+</script>
+</body>
+</html>
