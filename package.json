@@ -1,0 +1,29 @@
+{
+  "name": "avighnaaa",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shravani01-clg/Avighnaaa.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Shravani01-clg/Avighnaaa/issues"
+  },
+  "homepage": "https://github.com/Shravani01-clg/Avighnaaa#readme",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.115.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
