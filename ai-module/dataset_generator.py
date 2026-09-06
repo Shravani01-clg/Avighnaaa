@@ -1,0 +1,299 @@
+"""
+Dataset Generator
+
+Generates labeled sensor data for training ML models.
+Uses the same physics as the Node.js simulator but produces CSV/JSON datasets.
+
+Scenarios generate labeled data:
+  - normal: risk_level = LOW
+  - gas buildup: risk_level escalates MEDIUM → HIGH
+  - flood: risk_level escalates MEDIUM → HIGH
+  - overheat: risk_level escalates MEDIUM → HIGH
+  - worker fall: risk_level = CRITICAL
+  - SOS: risk_level = CRITICAL
+  - combined danger: risk_level = CRITICAL
+"""
+
+import numpy as np
+import pandas as pd
+import json
+import os
+
+# ─── Normal Data Generator ───────────────────────────────────
+
+def generate_normal(count=500):
+    """Generate normal (safe) sensor readings with realistic noise."""
+    data = []
+    temp = 28.0
+    gas = 200.0
+    water = 5.0
+    ax, ay, az = 0.0, 0.0, 9.8
+
+    for _ in range(count):
+        # Slow drift
+        temp += np.random.normal(0, 0.5)
+        gas += np.random.normal(0, 8)
+        water += np.random.normal(0, 0.3)
+        ax += np.random.normal(0, 0.05)
+        ay += np.random.normal(0, 0.05)
+        az += np.random.normal(0, 0.05)
+
+        # Drift back to baseline
+        temp += (28 - temp) * 0.05
+        gas += (200 - gas) * 0.05
+        water += (5 - water) * 0.03
+        ax *= 0.95
+        ay *= 0.95
+        az += (9.8 - az) * 0.1
+
+        # Clamp
+        temp = np.clip(temp, 20, 36)
+        gas = np.clip(gas, 80, 350)
+        water = np.clip(water, 0, 12)
+        ax = np.clip(ax, -1, 1)
+        ay = np.clip(ay, -1, 1)
+        az = np.clip(az, 9.0, 10.5)
+
+        data.append({
+            "temperature_c": round(temp, 1),
+            "gas_raw": round(gas),
+            "water_level_cm": round(water, 1),
+            "acceleration_x_ms2": round(ax, 2),
+            "acceleration_y_ms2": round(ay, 2),
+            "acceleration_z_ms2": round(az, 2),
+            "sos": False,
+            "risk_level": "LOW",
+            "scenario": "normal",
+        })
+
+    return data
+
+
+def generate_danger_buildup(scenario_name, target_field, base_value, danger_value, count=80):
+    """Gradually build up danger in one sensor field."""
+    data = []
+    temp, gas, water = 28.0, 200.0, 5.0
+    ax, ay, az = 0.0, 0.0, 9.8
+
+    for i in range(count):
+        progress = i / count
+
+        # Apply danger buildup to target field
+        if target_field == "temperature_c":
+            temp = base_value + (danger_value - base_value) * progress + np.random.normal(0, 1)
+        elif target_field == "gas_raw":
+            gas = base_value + (danger_value - base_value) * progress + np.random.normal(0, 10)
+        elif target_field == "water_level_cm":
+            water = base_value + (danger_value - base_value) * progress + np.random.normal(0, 0.5)
+
+        # Keep others normal
+        temp = temp if target_field == "temperature_c" else np.clip(temp + np.random.normal(0, 0.3), 22, 34)
+        gas = gas if target_field == "gas_raw" else np.clip(gas + np.random.normal(0, 5), 100, 350)
+        water = water if target_field == "water_level_cm" else np.clip(water + np.random.normal(0, 0.2), 0, 12)
+
+        # Normal accel
+        ax = np.clip(np.random.normal(0, 0.2), -0.5, 0.5)
+        ay = np.clip(np.random.normal(0, 0.2), -0.5, 0.5)
+        az = np.clip(9.8 + np.random.normal(0, 0.2), 9.3, 10.3)
+
+        # Label
+        if progress < 0.4:
+            risk = "LOW"
+        elif progress < 0.7:
+            risk = "MEDIUM"
+        else:
+            risk = "HIGH"
+
+        data.append({
+            "temperature_c": round(temp, 1),
+            "gas_raw": round(gas),
+            "water_level_cm": round(water, 1),
+            "acceleration_x_ms2": round(ax, 2),
+            "acceleration_y_ms2": round(ay, 2),
+            "acceleration_z_ms2": round(az, 2),
+            "sos": False,
+            "risk_level": risk,
+            "scenario": scenario_name,
+        })
+
+    return data
+
+
+def generate_fall(count=30):
+    """Generate fall event data: standing → free-fall → impact → lying down."""
+    data = []
+
+    # Phase 1: Standing (5 readings)
+    for _ in range(5):
+        data.append({
+            "temperature_c": 28 + np.random.normal(0, 0.5),
+            "gas_raw": 200 + np.random.normal(0, 10),
+            "water_level_cm": 5 + np.random.normal(0, 0.3),
+            "acceleration_x_ms2": np.random.normal(0, 0.2),
+            "acceleration_y_ms2": np.random.normal(0, 0.2),
+            "acceleration_z_ms2": 9.8 + np.random.normal(0, 0.2),
+            "sos": False,
+            "risk_level": "LOW",
+            "scenario": "fall",
+        })
+
+    # Phase 2: Free-fall (3 readings)
+    for _ in range(3):
+        data.append({
+            "temperature_c": 28 + np.random.normal(0, 0.5),
+            "gas_raw": 200 + np.random.normal(0, 10),
+            "water_level_cm": 5 + np.random.normal(0, 0.3),
+            "acceleration_x_ms2": np.random.normal(0, 0.5),
+            "acceleration_y_ms2": np.random.normal(0, 0.5),
+            "acceleration_z_ms2": 0.5 + np.random.normal(0, 0.5),
+            "sos": False,
+            "risk_level": "HIGH",
+            "scenario": "fall",
+        })
+
+    # Phase 3: Impact (2 readings)
+    for _ in range(2):
+        data.append({
+            "temperature_c": 28 + np.random.normal(0, 0.5),
+            "gas_raw": 200 + np.random.normal(0, 10),
+            "water_level_cm": 5 + np.random.normal(0, 0.3),
+            "acceleration_x_ms2": 25 + np.random.normal(0, 5),
+            "acceleration_y_ms2": 20 + np.random.normal(0, 5),
+            "acceleration_z_ms2": 35 + np.random.normal(0, 8),
+            "sos": False,
+            "risk_level": "CRITICAL",
+            "scenario": "fall",
+        })
+
+    # Phase 4: Lying down (10 readings)
+    for _ in range(10):
+        data.append({
+            "temperature_c": 28 + np.random.normal(0, 0.5),
+            "gas_raw": 200 + np.random.normal(0, 10),
+            "water_level_cm": 5 + np.random.normal(0, 0.3),
+            "acceleration_x_ms2": 6.0 + np.random.normal(0, 1),
+            "acceleration_y_ms2": 1.5 + np.random.normal(0, 0.5),
+            "acceleration_z_ms2": 4.0 + np.random.normal(0, 1),
+            "sos": False,
+            "risk_level": "CRITICAL",
+            "scenario": "fall",
+        })
+
+    # Phase 5: Recovery (10 readings)
+    for _ in range(10):
+        data.append({
+            "temperature_c": 28 + np.random.normal(0, 0.5),
+            "gas_raw": 200 + np.random.normal(0, 10),
+            "water_level_cm": 5 + np.random.normal(0, 0.3),
+            "acceleration_x_ms2": np.random.normal(0, 0.3),
+            "acceleration_y_ms2": np.random.normal(0, 0.3),
+            "acceleration_z_ms2": 9.8 + np.random.normal(0, 0.3),
+            "sos": False,
+            "risk_level": "LOW",
+            "scenario": "fall",
+        })
+
+    return data
+
+
+def generate_sos(count=30):
+    """Generate SOS emergency data."""
+    data = []
+
+    # Normal before SOS
+    for _ in range(5):
+        data.append({
+            "temperature_c": 28 + np.random.normal(0, 0.5),
+            "gas_raw": 200 + np.random.normal(0, 10),
+            "water_level_cm": 5 + np.random.normal(0, 0.3),
+            "acceleration_x_ms2": np.random.normal(0, 0.2),
+            "acceleration_y_ms2": np.random.normal(0, 0.2),
+            "acceleration_z_ms2": 9.8 + np.random.normal(0, 0.2),
+            "sos": True,
+            "risk_level": "CRITICAL",
+            "scenario": "sos",
+        })
+
+    # SOS with rising danger
+    for i in range(20):
+        progress = i / 20
+        data.append({
+            "temperature_c": 28 + progress * 10 + np.random.normal(0, 1),
+            "gas_raw": 200 + progress * 400 + np.random.normal(0, 20),
+            "water_level_cm": 5 + np.random.normal(0, 0.3),
+            "acceleration_x_ms2": np.random.normal(0, 0.3),
+            "acceleration_y_ms2": np.random.normal(0, 0.3),
+            "acceleration_z_ms2": 9.8 + np.random.normal(0, 0.3),
+            "sos": True,
+            "risk_level": "CRITICAL",
+            "scenario": "sos",
+        })
+
+    return data
+
+
+def generate_combined(count=40):
+    """Generate combined danger (gas + water + temperature all rising)."""
+    data = []
+
+    for i in range(count):
+        progress = i / count
+        data.append({
+            "temperature_c": 28 + progress * 25 + np.random.normal(0, 1),
+            "gas_raw": 200 + progress * 600 + np.random.normal(0, 15),
+            "water_level_cm": 5 + progress * 35 + np.random.normal(0, 0.5),
+            "acceleration_x_ms2": np.random.normal(0, 0.3),
+            "acceleration_y_ms2": np.random.normal(0, 0.3),
+            "acceleration_z_ms2": 9.8 + np.random.normal(0, 0.3),
+            "sos": progress > 0.7,
+            "risk_level": "CRITICAL" if progress > 0.6 else "HIGH" if progress > 0.3 else "MEDIUM",
+            "scenario": "combined",
+        })
+
+    return data
+
+
+# ─── Main Dataset Builder ────────────────────────────────────
+
+def build_dataset(readings_per_scenario=500):
+    """Build a complete labeled dataset from all scenarios."""
+    all_data = []
+
+    # Normal data (large pool)
+    all_data.extend(generate_normal(readings_per_scenario))
+
+    # Danger buildups
+    all_data.extend(generate_danger_buildup("gas_leak", "gas_raw", 200, 800, readings_per_scenario))
+    all_data.extend(generate_danger_buildup("flood", "water_level_cm", 5, 45, readings_per_scenario))
+    all_data.extend(generate_danger_buildup("overheat", "temperature_c", 28, 55, readings_per_scenario))
+
+    # Special events
+    for _ in range(readings_per_scenario // 30):
+        all_data.extend(generate_fall())
+        all_data.extend(generate_sos())
+        all_data.extend(generate_combined())
+
+    df = pd.DataFrame(all_data)
+
+    # Round numeric columns
+    for col in ["temperature_c", "gas_raw", "water_level_cm",
+                "acceleration_x_ms2", "acceleration_y_ms2", "acceleration_z_ms2"]:
+        df[col] = df[col].round(2)
+
+    return df
+
+
+if __name__ == "__main__":
+    print("Generating dataset...")
+    df = build_dataset(500)
+
+    # Save as CSV
+    output_path = os.path.join(os.path.dirname(__file__), "training_data.csv")
+    df.to_csv(output_path, index=False)
+    print(f"Saved {len(df)} samples to {output_path}")
+
+    # Print distribution
+    print("\nRisk level distribution:")
+    print(df["risk_level"].value_counts().to_string())
+    print(f"\nScenario distribution:")
+    print(df["scenario"].value_counts().to_string())

@@ -1,5 +1,51 @@
-const supabase = require("../config/supabase");
+const store = require("../config/dataStore");
 const { calculateRisk } = require("./riskEngine");
+const { getAIAnalysis } = require("./aiIntegration");
+
+// ─── Alert Type → Severity Map ──────────────────────────────
+
+const ALERT_SEVERITY = {
+  GAS_DANGER: "HIGH",
+  FLOOD_DANGER: "HIGH",
+  TEMP_DANGER: "HIGH",
+  FALL_DETECTED: "CRITICAL",
+  SOS: "CRITICAL",
+  COMBINED_DANGER: "CRITICAL",
+  HIGH_RISK: "HIGH",  // legacy, kept for backwards compat
+};
+
+const ALERT_MESSAGES = {
+  GAS_DANGER: "Dangerous gas levels detected",
+  FLOOD_DANGER: "Flooding / high water level detected",
+  TEMP_DANGER: "Abnormal temperature detected",
+  FALL_DETECTED: "Worker fall detected — immediate assistance required",
+  SOS: "Emergency SOS activated by worker",
+  COMBINED_DANGER: "Multiple simultaneous hazards detected — CRITICAL situation",
+  HIGH_RISK: "High risk level detected",
+};
+
+/**
+ * Create an alert if no unresolved alert of the same type exists for this device.
+ * Deduplication prevents alert spam for ongoing events.
+ */
+async function createAlertIfNew(device_id, alertType, extraMessage) {
+  try {
+    const existing = await store.select("alerts", {
+      filters: { device_id, alert_type: alertType, is_resolved: false },
+      limit: 1,
+    });
+
+    if (existing.length > 0) return; // already have an open alert
+
+    const severity = ALERT_SEVERITY[alertType] || "MEDIUM";
+    const baseMessage = ALERT_MESSAGES[alertType] || `${alertType} alert`;
+    const message = extraMessage ? `${baseMessage}: ${extraMessage}` : baseMessage;
+
+    await store.insert("alerts", { device_id, alert_type: alertType, severity, message, is_resolved: false });
+  } catch (err) {
+    console.error(`Alert creation failed for ${alertType}:`, err.message);
+  }
+}
 
 // POST /api/sensor-data
 const receiveSensorData = async (req, res) => {
@@ -47,7 +93,6 @@ const receiveSensorData = async (req, res) => {
       }
     }
 
-    // Gas and water levels cannot be negative
     if (gas_raw < 0) {
       return res.status(400).json({
         success: false,
@@ -62,7 +107,6 @@ const receiveSensorData = async (req, res) => {
       });
     }
 
-    // SOS must be boolean
     if (sos !== undefined && typeof sos !== "boolean") {
       return res.status(400).json({
         success: false,
@@ -70,10 +114,8 @@ const receiveSensorData = async (req, res) => {
       });
     }
 
-    // Timestamp validation
     if (timestamp !== undefined) {
       const parsedTimestamp = new Date(timestamp);
-
       if (Number.isNaN(parsedTimestamp.getTime())) {
         return res.status(400).json({
           success: false,
@@ -82,156 +124,65 @@ const receiveSensorData = async (req, res) => {
       }
     }
 
-    // Calculate risk
-    const risk = calculateRisk(req.body);
+    // ── Calculate risk (enhanced engine with fall detection) ──
+    const ruleBasedRisk = calculateRisk(req.body);
 
-    // Store sensor reading
-    const { data, error } = await supabase
-      .from("sensor_readings")
-      .insert([
-        {
-          device_id,
-          temperature_c,
-          gas_raw,
-          water_level_cm,
-          acceleration_x_ms2,
-          acceleration_y_ms2,
-          acceleration_z_ms2,
-          sos: sos ?? false,
-          recorded_at: timestamp || new Date().toISOString()
-        }
-      ])
-      .select();
+    // ── Get AI analysis (falls back gracefully if AI server is down) ──
+    const aiResult = await getAIAnalysis(req.body, ruleBasedRisk);
 
-    if (error) {
-      return res.status(500).json({
-        success: false,
-        message: "Failed to store sensor data",
-        error: error.message
-      });
-    }
+    // Final risk: AI never downgrades, only upgrades
+    const risk = {
+      risk_score: aiResult.finalRiskScore || ruleBasedRisk.risk_score,
+      risk_level: aiResult.finalRiskLevel || ruleBasedRisk.risk_level,
+      reason: ruleBasedRisk.reason,
+      details: ruleBasedRisk.details,
+      alerts: [...ruleBasedRisk.alerts, ...(aiResult.aiAlerts || [])],
+      ai: aiResult.aiAnalysis || null,
+    };
 
-    // Store calculated risk prediction
-    const { data: riskData, error: riskError } = await supabase
-      .from("risk_predictions")
-      .insert([
-        {
-          device_id,
-          risk_score: risk.risk_score,
-          risk_level: risk.risk_level,
-          reason: risk.reason
-        }
-      ])
-      .select();
+    // ── Store sensor reading ──
+    const data = await store.insert("sensor_readings", {
+      device_id,
+      temperature_c,
+      gas_raw,
+      water_level_cm,
+      acceleration_x_ms2,
+      acceleration_y_ms2,
+      acceleration_z_ms2,
+      sos: sos ?? false,
+      recorded_at: timestamp || new Date().toISOString()
+    });
 
-    if (riskError) {
-      return res.status(500).json({
-        success: false,
-        message: "Sensor data stored, but risk prediction failed",
-        error: riskError.message
-      });
-    }
+    // ── Store risk prediction ──
+    const riskData = await store.insert("risk_predictions", {
+      device_id,
+      risk_score: risk.risk_score,
+      risk_level: risk.risk_level,
+      reason: risk.reason
+    });
 
-    // Create HIGH_RISK alert only if there is no unresolved HIGH_RISK alert
-    if (risk.risk_level === "HIGH") {
-      const {
-        data: existingHighRiskAlerts,
-        error: highRiskCheckError
-      } = await supabase
-        .from("alerts")
-        .select("id")
-        .eq("device_id", device_id)
-        .eq("alert_type", "HIGH_RISK")
-        .eq("is_resolved", false)
-        .limit(1);
-
-      if (highRiskCheckError) {
-        return res.status(500).json({
-          success: false,
-          message: "Risk stored, but HIGH_RISK alert check failed",
-          error: highRiskCheckError.message
-        });
-      }
-
-      if (existingHighRiskAlerts.length === 0) {
-        const { error: alertError } = await supabase
-          .from("alerts")
-          .insert([
-            {
-              device_id,
-              alert_type: "HIGH_RISK",
-              severity: "HIGH",
-              message: `High risk detected: ${risk.reason}`,
-              is_resolved: false
-            }
-          ]);
-
-        if (alertError) {
-          return res.status(500).json({
-            success: false,
-            message: "Sensor data and risk stored, but alert creation failed",
-            error: alertError.message
-          });
-        }
-      }
-    }
-
-    // Create SOS alert only if there is no unresolved SOS alert
-    if (sos === true) {
-      const {
-        data: existingSosAlerts,
-        error: sosCheckError
-      } = await supabase
-        .from("alerts")
-        .select("id")
-        .eq("device_id", device_id)
-        .eq("alert_type", "SOS")
-        .eq("is_resolved", false)
-        .limit(1);
-
-      if (sosCheckError) {
-        return res.status(500).json({
-          success: false,
-          message: "Sensor data and risk stored, but SOS alert check failed",
-          error: sosCheckError.message
-        });
-      }
-
-      if (existingSosAlerts.length === 0) {
-        const { error: sosAlertError } = await supabase
-          .from("alerts")
-          .insert([
-            {
-              device_id,
-              alert_type: "SOS",
-              severity: "CRITICAL",
-              message: "Emergency SOS activated by worker",
-              is_resolved: false
-            }
-          ]);
-
-        if (sosAlertError) {
-          return res.status(500).json({
-            success: false,
-            message: "Sensor data stored, but SOS alert creation failed",
-            error: sosAlertError.message
-          });
-        }
-      }
+    // ── Create alerts based on enhanced risk engine output ──
+    // The risk engine returns an array of alert types that should be created.
+    // Each alert is deduplicated — only one unresolved alert per type per device.
+    for (const alertType of risk.alerts) {
+      await createAlertIfNew(device_id, alertType, risk.reason);
     }
 
     res.status(201).json({
       success: true,
       message: "Sensor data, risk prediction and alerts processed successfully",
       data,
-      risk: riskData
+      risk: riskData,
+      riskDetails: risk.details,
+      alertsCreated: risk.alerts,
+      ai: risk.ai,
     });
 
-  } catch (error) {
+  } catch (err) {
     res.status(500).json({
       success: false,
       message: "Server error",
-      error: error.message
+      error: err.message
     });
   }
 };
@@ -242,20 +193,11 @@ const getSensorData = async (req, res) => {
   try {
     const { deviceId } = req.params;
 
-    const { data, error } = await supabase
-      .from("sensor_readings")
-      .select("*")
-      .eq("device_id", deviceId)
-      .order("recorded_at", { ascending: false })
-      .limit(50);
-
-    if (error) {
-      return res.status(500).json({
-        success: false,
-        message: "Failed to fetch sensor data",
-        error: error.message
-      });
-    }
+    const data = await store.select("sensor_readings", {
+      filters: { device_id: deviceId },
+      orderBy: "recorded_at",
+      limit: 50,
+    });
 
     res.json({
       success: true,
@@ -264,11 +206,11 @@ const getSensorData = async (req, res) => {
       data
     });
 
-  } catch (error) {
+  } catch (err) {
     res.status(500).json({
       success: false,
       message: "Server error",
-      error: error.message
+      error: err.message
     });
   }
 };
