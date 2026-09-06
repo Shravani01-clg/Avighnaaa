@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AVIGHNAAA | Mining Safety System</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Chart.js for Analytics -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* Authentication anti-flash */
+        body.auth-loading .app-container {
+            visibility: hidden;
+        }
+
+        body.auth-loading .login-overlay {
+            visibility: visible;
+        }
+
+        body.logged-in .app-container {
+            visibility: visible;
+        }
+
+        body.logged-in .login-overlay {
+            display: none;
+        }
+
+        body.logged-out .app-container {
+            visibility: hidden;
+        }
+
+        body.logged-out .login-overlay {
+            display: flex;
+        }
+    </style>
+</head>
+<body class="auth-loading">
+
+    <!-- LOGIN OVERLAY -->
+    <div id="login-overlay" class="login-overlay">
+        <div class="login-card">
+            <div class="login-brand">
+                <img src="Assets/brand-logo.png" alt="Avighnaaa Logo" class="login-logo">
+                <div>
+                    <h1>AVIGHNAA</h1>
+                    <p>Mining Safety System</p>
+                </div>
+            </div>
+            <div class="login-form-wrap">
+                <h2 class="login-title">Control Room Access</h2>
+                <p class="login-sub">Sign in to access the monitoring dashboard.</p>
+                <form id="login-form" class="login-form">
+                    <div class="field">
+                        <label for="login-user">Username</label>
+                        <input type="text" id="login-user" placeholder="operator" autocomplete="off">
+                    </div>
+                    <div class="field">
+                        <label for="login-pass">Password</label>
+                        <input type="password" id="login-pass" placeholder="••••••••" autocomplete="off">
+                    </div>
+                    <div id="login-error" class="login-error hidden">Invalid credentials. Try again.</div>
+                    <button type="submit" class="btn btn-primary login-btn">Sign In</button>
+                </form>
+                <p class="login-hint">Demo: <strong>operator</strong> / <strong>admin</strong></p>
+            </div>
+        </div>
+    </div>
+
+    <div class="app-container">
+        <!-- SIDEBAR -->
+        <aside class="sidebar">
+            <div class="brand">
+                <img src="Assets/brand-logo.png" alt="Avighnaaa Logo" class="brand-logo">
+                <div>
+                    <h1>AVIGHNAA</h1>
+                    <p>Mining Safety System</p>
+                </div>
+            </div>
+            
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-target="dashboard">
+                    <i data-lucide="layout-dashboard"></i> Dashboard
+                </a>
+                <a href="#" class="nav-item" data-target="workers">
+                    <i data-lucide="users"></i> Workers
+                </a>
+                <a href="#" class="nav-item" data-target="alerts">
+                    <i data-lucide="triangle-alert"></i> Alerts 
+                    <span id="sidebar-alert-badge" class="badge badge-critical" style="display: none;">0</span>
+                </a>
+                <a href="#" class="nav-item" data-target="analytics">
+                    <i data-lucide="activity"></i> Analytics
+                </a>
+                <a href="#" class="nav-item" data-target="settings">
+                    <i data-lucide="settings"></i> Settings
+                </a>
+            </nav>
+
+            <div class="system-status-footer">
+                <div class="status-indicator safe-pulse"></div>
+                <div class="status-badge">
+                    <div class="status-text">
+                        <span class="status-title">System Operational</span>
+                        <span class="status-desc">All devices online</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- MAIN CONTENT -->
+        <main class="main-content">
+            <!-- HEADER -->
+            <header class="top-header">
+                <div class="header-left">
+                    <span class="eyebrow">CONTROL ROOM</span>
+                    <h2 id="page-title">Dashboard</h2>
+                </div>
+                <div class="header-right">
+                    <div class="zone-info">
+                        <i data-lucide="map-pin"></i> Zone A &middot; Main Shaft
+                    </div>
+                    <div class="connection-status">
+                        <div class="status-indicator safe-pulse"></div> Live
+                    </div>
+                    <div class="live-clock" id="live-clock">--:--:--</div>
+                    <div class="operator-profile">
+                        <i data-lucide="user-round"></i> <span id="operator-display">Operator</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- PAGE: DASHBOARD -->
+            <div id="page-dashboard" class="page active">
+                <div class="summary-grid">
+                    <div class="summary-card outline-warning">
+                        <div class="card-label">Overall Risk</div>
+                        <div class="card-value text-warning">MEDIUM</div>
+                        <div class="card-subtext">48 / 100 Score</div>
+                    </div>
+                    <div class="summary-card">
+                        <div class="card-label">Avg Temperature</div>
+                        <div class="card-value data-font" id="dash-avg-temp">32.5 &deg;C</div>
+                    </div>
+                    <div class="summary-card">
+                        <div class="card-label">Avg Gas Level</div>
+                        <div class="card-value data-font" id="dash-avg-gas">420 <span class="unit">raw</span></div>
+                    </div>
+                    <div class="summary-card">
+                        <div class="card-label">Avg Water Level</div>
+                        <div class="card-value data-font" id="dash-avg-water">15.0 cm</div>
+                    </div>
+                    <div class="summary-card">
+                        <div class="card-label">Workers Monitored</div>
+                        <div class="card-value">03 <span class="unit">Active</span></div>
+                    </div>
+                </div>
+
+                <section class="section">
+                    <div class="section-header">
+                        <h3>Worker Safety Monitoring</h3>
+                    </div>
+                    <div class="worker-grid" id="dashboard-workers-container">
+                        <!-- Workers generated by JavaScript -->
+                    </div>
+                </section>
+
+                <div class="dashboard-split">
+                    <!-- AI Intelligence Section -->
+                    <section class="section ai-section">
+                        <div class="section-header">
+                            <h3>Safety Intelligence</h3>
+                            <span class="badge badge-info">Prototype / Simulated</span>
+                        </div>
+                        <div class="ai-content">
+                            <div class="ai-scores">
+                                <div>
+                                    <div class="label">AI Risk Score</div>
+                                    <div class="value text-warning">48 / 100</div>
+                                </div>
+                                <div>
+                                    <div class="label">Predicted Risk (10m)</div>
+                                    <div class="value text-critical">HIGH</div>
+                                </div>
+                                <div>
+                                    <div class="label">Model Confidence</div>
+                                    <div class="value">87% STABLE</div>
+                                </div>
+                            </div>
+                            <div class="ai-factors">
+                                <h4>Detected Factors:</h4>
+                                <ul>
+                                    <li><strong>Temperature:</strong> Trending upward <span class="text-warning">[MODERATE]</span></li>
+                                    <li><strong>Gas Level:</strong> Within safe range <span class="text-safe">[LOW]</span></li>
+                                    <li><strong>Water Level:</strong> Gradual increase detected <span class="text-warning">[MODERATE]</span></li>
+                                    <li><strong>Motion:</strong> No abnormal movement <span class="text-safe">[LOW]</span></li>
+                                </ul>
+                            </div>
+                            <div class="ai-recommendation">
+                                <strong>AI Recommendation:</strong><br>
+                                Continue monitoring the affected worker and review environmental conditions if temperature and water levels continue to rise.
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Recent Alerts Section -->
+                    <section class="section">
+                        <div class="section-header">
+                            <h3>Recent Alerts</h3>
+                            <button class="btn btn-small" onclick="switchPage('alerts')">View All</button>
+                        </div>
+                        <div class="alert-list" id="dashboard-alerts-container">
+                            <!-- Alerts generated by JavaScript -->
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- PAGE: WORKERS -->
+            <div id="page-workers" class="page">
+                <div class="summary-grid">
+                    <div class="summary-card">
+                        <div class="card-label">Total Workers</div>
+                        <div class="card-value">03</div>
+                    </div>
+                    <div class="summary-card outline-safe">
+                        <div class="card-label">Safe</div>
+                        <div class="card-value text-safe" id="workers-safe-count">02</div>
+                    </div>
+                    <div class="summary-card outline-warning">
+                        <div class="card-label">Under Observation</div>
+                        <div class="card-value text-warning" id="workers-obs-count">01</div>
+                    </div>
+                </div>
+
+                <section class="section">
+                    <div class="table-responsive">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Worker</th>
+                                    <th>Belt ID</th>
+                                    <th>Status</th>
+                                    <th>Temp (&deg;C)</th>
+                                    <th>Gas (raw)</th>
+                                    <th>Water (cm)</th>
+                                    <th>Battery</th>
+                                    <th>Risk</th>
+                                </tr>
+                            </thead>
+                            <tbody id="workers-table-body">
+                                <!-- Generated by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                    <p class="footnote">* Note: Click on any worker's name to view detailed telemetry. Belt RF-001 represents hardware ESP32.</p>
+                </section>
+            </div>
+
+            <!-- PAGE: ALERTS -->
+            <div id="page-alerts" class="page">
+                <div class="summary-grid">
+                    <div class="summary-card">
+                        <div class="card-label">Total Active Alerts</div>
+                        <div class="card-value" id="alert-total-count">0</div>
+                    </div>
+                    <div class="summary-card outline-critical">
+                        <div class="card-label">Critical</div>
+                        <div class="card-value text-critical" id="alert-crit-count">0</div>
+                    </div>
+                    <div class="summary-card outline-warning">
+                        <div class="card-label">Warning</div>
+                        <div class="card-value text-warning" id="alert-warn-count">0</div>
+                    </div>
+                </div>
+
+                <section class="section">
+                    <div class="section-header">
+                        <h3>Alert Management & AI Analysis</h3>
+                        <button class="btn btn-primary" onclick="acknowledgeAllAlerts()">Acknowledge All</button>
+                    </div>
+                    <div class="alert-list full-width" id="alerts-page-container">
+                        <!-- Generated by JS -->
+                    </div>
+                </section>
+            </div>
+
+            <!-- PAGE: ANALYTICS -->
+            <div id="page-analytics" class="page">
+                <div class="chart-grid">
+                    <div class="chart-card">
+                        <h3>Temperature Trend (&deg;C)</h3>
+                        <div class="chart-container">
+                            <canvas id="chart-temp"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <h3>Gas Level Trend (raw)</h3>
+                        <div class="chart-container">
+                            <canvas id="chart-gas"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <h3>Water Level Trend (cm)</h3>
+                        <div class="chart-container">
+                            <canvas id="chart-water"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <h3>System Risk Score Trend</h3>
+                        <div class="chart-container">
+                            <canvas id="chart-risk"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PAGE: SETTINGS -->
+            <div id="page-settings" class="page">
+                <div class="settings-grid">
+                    <div class="settings-card">
+                        <h3>Safety Thresholds</h3>
+                        <form id="settings-form">
+                            <div class="form-group">
+                                <h4>Temperature (&deg;C)</h4>
+                                <div class="input-row">
+                                    <label>Warning: <input type="number" id="set-temp-warn" value="36"></label>
+                                    <label>Critical: <input type="number" id="set-temp-crit" value="40"></label>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <h4>Gas (raw)</h4>
+                                <div class="input-row">
+                                    <label>Warning: <input type="number" id="set-gas-warn" value="550"></label>
+                                    <label>Critical: <input type="number" id="set-gas-crit" value="750"></label>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <h4>Water Level (cm)</h4>
+                                <div class="input-row">
+                                    <label>Warning: <input type="number" id="set-water-warn" value="25"></label>
+                                    <label>Critical: <input type="number" id="set-water-crit" value="45"></label>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <h4>System Refresh Interval</h4>
+                                <label><input type="number" id="set-interval" value="3"> Seconds</label>
+                            </div>
+                            
+                            <div class="form-actions">
+                                <button type="button" class="btn" onclick="resetSettings()">Reset Defaults</button>
+                                <button type="button" class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+                            </div>
+                            <div id="settings-toast" class="toast hidden">Settings saved successfully.</div>
+                        </form>
+                    </div>
+
+                    <div class="settings-card">
+                        <h3>Activity Log</h3>
+                        <div class="log-controls">
+                            <label class="log-toggle">
+                                <input type="checkbox" id="log-alerts" checked> Log alerts to activity log
+                            </label>
+                            <span class="log-count" id="activity-log-count">0 entries</span>
+                        </div>
+                        <div class="log-scroll" id="activity-log-container">
+                            <!-- Generated by JS -->
+                        </div>
+                        <ul class="system-status-list">
+                            <li>
+                                <span><i data-lucide="server"></i> Backend API</span>
+                                <span class="badge badge-safe">Connected (Simulated)</span>
+                            </li>
+                            <li>
+                                <span><i data-lucide="database"></i> Database (Supabase)</span>
+                                <span class="badge badge-safe">Connected (Simulated)</span>
+                            </li>
+                            <li>
+                                <span><i data-lucide="cpu"></i> ESP32 Hardware</span>
+                                <span class="badge badge-warning">Waiting for Live Device</span>
+                            </li>
+                            <li>
+                                <span><i data-lucide="brain"></i> AI Intelligence Module</span>
+                                <span class="badge badge-info">Prototype Data</span>
+                            </li>
+                        </ul>
+                        <button class="btn btn-small" style="margin-top:16px; width:100%;" onclick="signOut()">Sign Out</button>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- WORKER DETAIL MODAL -->
+    <div id="worker-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-worker-name">Worker Details</h3>
+                <button class="btn-close" onclick="closeModal()"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-primary" id="btn-belt-ping" onclick="pingBelt()">
+                    <i data-lucide="send"></i> Ping Belt
+                </button>
+            </div>
+            <div class="modal-body" id="modal-worker-body">
+                <!-- Populated dynamically by JS -->
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

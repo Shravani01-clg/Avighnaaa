@@ -1,0 +1,50 @@
+/* ==========================================================================
+   AVIGHNAA - Inline bootstrap for preview: executes app logic from script.js
+   by evaling the file contents. Keeps index.html unchanged.
+   ========================================================================== */
+
+(function () {
+  const scripts = document.querySelectorAll('script[src]');
+  let appScriptEl = null;
+  for (const s of scripts) {
+    if (s.src && s.src.indexOf('script.js') !== -1) { appScriptEl = s; break; }
+  }
+  if (!appScriptEl) return;
+
+  function loadText(src) {
+    return fetch(src, { cache: 'no-store' })
+      .then(function (r) { return r.text(); })
+      .then(function (t) { return t; })
+      .catch(function (e) { console.error('Failed to load ' + src + ': ' + e.message); return null; });
+  }
+
+  function boot(text) {
+    if (!text) return;
+    // Wrap in a function so `var`/`let` at top-level don't leak in weird ways,
+    // but keep `window.` assignments visible to inline onclick handlers.
+    const wrapped = '(function () {\n' + text + '\n})();';
+    try {
+      const result = eval(wrapped);
+      // Re-run icon creation in case lucide library already loaded by the time
+      // our eval runs (it loads async from CDN).
+      if (typeof lucide !== 'undefined' && typeof lucide.createIcons === 'function') {
+        try { lucide.createIcons(); } catch (e) {}
+      }
+    } catch (e) {
+      console.error('AVIGHNAA script eval failed:', e);
+    }
+  }
+
+  if (appScriptEl.readyState === 'loaded' || appScriptEl.readyState === 'complete') {
+    // Already loaded — get its cached text via fetch and eval.
+    loadText(appScriptEl.src).then(boot);
+  } else {
+    // Wait for the browser to fetch it.
+    appScriptEl.addEventListener('load', function () {
+      loadText(appScriptEl.src).then(boot);
+    });
+    appScriptEl.addEventListener('error', function () {
+      console.error('AVIGHNAA script.js failed to load from ' + appScriptEl.src);
+    });
+  }
+})();
