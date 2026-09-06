@@ -1,0 +1,20 @@
+{
+  "name": "rockfall-simulator",
+  "version": "1.0.0",
+  "description": "Sensor data simulator for RockFall (acts as ESP32)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "normal": "node index.js",
+    "gas": "node index.js --scenario gas",
+    "flood": "node index.js --scenario flood",
+    "overheat": "node index.js --scenario overheat",
+    "fall": "node index.js --scenario fall",
+    "sos": "node index.js --scenario sos",
+    "combined": "node index.js --scenario combined",
+    "loop": "node index.js --loop",
+    "once": "node index.js --once"
+  },
+  "keywords": ["simulator", "iot", "rockfall", "sensor"],
+  "license": "ISC"
+}
