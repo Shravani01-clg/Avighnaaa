@@ -12,6 +12,13 @@
 
 lucide.createIcons();
 const API_BASE_URL = "http://localhost:5002/api";
+const SUPABASE_URL = "https://qsymativfurrwguffwvc.supabase.co";
+const SUPABASE_KEY = "sb_publishable_NBqLNkIQT-nxb7rfvJFJ0Q_Pyu6wsCg";
+
+const supabaseClient = supabase.createClient(
+    SUPABASE_URL,
+    SUPABASE_KEY
+);
 
 async function testBackendConnection() {
     try {
@@ -27,6 +34,87 @@ async function testBackendConnection() {
     } catch (error) {
         console.log("❌ Backend not reachable");
         return false;
+    }
+}
+async function loadWorkersFromBackend() {
+    try {
+        const { data: { session } } = await supabaseClient.auth.getSession();
+
+        if (!session) {
+            console.log("❌ No Supabase session found");
+            return;
+        }
+
+        const headers = {
+            Authorization: `Bearer ${session.access_token}`
+        };
+
+        const workersResponse = await fetch(`${API_BASE_URL}/workers`, {
+            headers
+        });
+
+        const workersResult = await workersResponse.json();
+
+        if (!workersResult.success) {
+            console.log("❌ Could not load workers:", workersResult.message);
+            return;
+        }
+
+        const workers = workersResult.data;
+
+        const devicesResponse = await fetch(`${API_BASE_URL}/devices`, {
+            headers
+        });
+
+        const devicesResult = await devicesResponse.json();
+
+        if (!devicesResult.success) {
+            console.log("❌ Could not load devices:", devicesResult.message);
+            return;
+        }
+
+        const devices = devicesResult.data;
+
+        for (const worker of workers) {
+            const device = devices.find(
+                d => d.worker_id === worker.worker_id
+            );
+
+            if (!device) continue;
+
+            const sensorResponse = await fetch(
+                `${API_BASE_URL}/sensor-data/${device.device_id}`,
+                { headers }
+            );
+
+            const sensorResult = await sensorResponse.json();
+
+            const latestSensor =
+                sensorResult.success && sensorResult.data.length
+                    ? sensorResult.data[sensorResult.data.length - 1]
+                    : null;
+
+            if (!latestSensor) continue;
+
+            worker.workerId = worker.worker_id;
+            worker.battery = device.battery ?? 100;
+            worker.location = worker.mine_location || "Unknown";
+            worker.sensorData = latestSensor;
+        }
+
+        appState.workers = workers.filter(worker => worker.sensorData);
+
+        renderDashboard();
+        renderWorkersPage();
+
+        addLogEntry(
+            'STATUS',
+            'tag-status',
+            `Loaded ${appState.workers.length} worker(s) from backend`
+        );
+
+    } catch (error) {
+        console.error("❌ Worker data loading failed:", error);
     }
 }
 
@@ -661,7 +749,11 @@ async function testBackendConnection() {
            
            const tempChart = appState.charts.temp;
            tempChart.data.datasets[0].data.shift();
-           tempChart.data.datasets[0].data.push(appState.workers[1].sensorData.temperature_c);
+           if (appState.workers.length > 0) {
+            tempChart.data.datasets[0].data.push(
+                appState.workers[0].sensorData.temperature_c
+            );
+        }
            tempChart.update();
    
            // Update active modal data if it's currently open
@@ -675,6 +767,7 @@ async function testBackendConnection() {
        }, appState.settings.refreshInterval * 1000);
    }   document.addEventListener('DOMContentLoaded', () => {
        testBackendConnection();
+       loadWorkersFromBackend();
        renderDashboard();
        renderWorkersPage();
        renderAlerts();
