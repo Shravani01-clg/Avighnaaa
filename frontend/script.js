@@ -11,6 +11,24 @@
 })();
 
 lucide.createIcons();
+const API_BASE_URL = "http://localhost:5002/api";
+
+async function testBackendConnection() {
+    try {
+        const response = await fetch("http://localhost:5002/");
+
+        if (response.ok) {
+            console.log("✅ Backend connected successfully");
+            return true;
+        }
+
+        console.log("⚠️ Backend responded, but with an error");
+        return false;
+    } catch (error) {
+        console.log("❌ Backend not reachable");
+        return false;
+    }
+}
 
    const appState = {
        settings: {
@@ -656,6 +674,7 @@ lucide.createIcons();
    
        }, appState.settings.refreshInterval * 1000);
    }   document.addEventListener('DOMContentLoaded', () => {
+       testBackendConnection();
        renderDashboard();
        renderWorkersPage();
        renderAlerts();
