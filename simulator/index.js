@@ -17,6 +17,7 @@ const http = require("http");
 const config = require("./config");
 const generator = require("./generator");
 const scenarios = require("./scenarios");
+const { analyzeRisk, reset: resetRisk } = require("../risk-module");
 
 // ─── CLI Arguments ───────────────────────────────────────────
 
@@ -73,10 +74,13 @@ function printReading(reading, label) {
   console.log(`[${ts}] ${label ? `[${label}] ` : ""}${risk} ${accel}${sos}`);
 }
 
-function printResult(result, index) {
+function printResult(result, index, localRisk) {
   const status = result.status === 201 ? "✅" : "❌";
-  const riskInfo = result.body?.risk?.[0]
-    ? ` → Risk: ${result.body.risk[0].risk_level} (${result.body.risk[0].risk_score})`
+  const backendRisk = result.body?.risk?.[0];
+  const riskInfo = localRisk
+    ? ` → Risk: ${localRisk.risk_level} (${localRisk.risk_score}) ${localRisk.reason}`
+    : backendRisk
+    ? ` → Risk: ${backendRisk.risk_level} (${backendRisk.risk_score})`
     : "";
   console.log(`  ${status} #${index} [${result.status}]${riskInfo}`);
 }
@@ -158,20 +162,22 @@ async function sendNext() {
 
   printReading(reading, label);
 
+  // Run risk analysis locally using the risk-module
+  const localRisk = analyzeRisk(reading);
+  const riskEmoji = localRisk.risk_level === "CRITICAL" ? "🔴" :
+                    localRisk.risk_level === "HIGH" ? "🟠" :
+                    localRisk.risk_level === "MEDIUM" ? "🟡" : "🟢";
+  console.log(`  ${riskEmoji} Risk: ${localRisk.risk_level} (${localRisk.risk_score}/100) — ${localRisk.reason}`);
+
   try {
     const result = await postSensorData(reading);
-    printResult(result, readingIndex);
     failCount = 0;
   } catch (err) {
     failCount++;
-    console.log(`  ❌ #${readingIndex} ERROR: ${err.message}`);
+    console.log(`  ⚠️  Backend not available (${err.message}) — risk calculated locally`);
     if (failCount >= 5) {
-      console.log("\n⚠️  5 consecutive failures. Is the backend running?");
-      console.log(`   Tried: ${config.apiUrl}/api/sensor-data`);
-      console.log("   Retrying in 10 seconds...\n");
+      console.log("\n⚠️  Backend offline. Continuing with local risk analysis only.\n");
       failCount = 0;
-      await sleep(10000);
-      return;
     }
   }
 }
@@ -194,11 +200,15 @@ async function run() {
   if (onceMode) {
     const reading = generator.generateNormal();
     printReading(reading, "single");
+    const localRisk = analyzeRisk(reading);
+    const riskEmoji = localRisk.risk_level === "CRITICAL" ? "🔴" :
+                      localRisk.risk_level === "HIGH" ? "🟠" :
+                      localRisk.risk_level === "MEDIUM" ? "🟡" : "🟢";
+    console.log(`  ${riskEmoji} Risk: ${localRisk.risk_level} (${localRisk.risk_score}/100) — ${localRisk.reason}`);
     try {
-      const result = await postSensorData(reading);
-      printResult(result, 1);
+      await postSensorData(reading);
     } catch (err) {
-      console.log(`  ❌ ERROR: ${err.message}`);
+      console.log(`  ⚠️  Backend not available — risk calculated locally`);
     }
     return;
   }
@@ -213,6 +223,7 @@ async function run() {
     console.log(`📋 Starting scenario: ${scenarioFlag}\n`);
     currentScenario = scenarioMap[scenarioFlag]();
     generator.resetState();
+    resetRisk();
   }
 
   // Handle loop mode
