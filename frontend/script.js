@@ -100,6 +100,7 @@ async function loadWorkersFromBackend() {
             worker.battery = device.battery ?? 100;
             worker.location = worker.mine_location || "Unknown";
             worker.sensorData = latestSensor;
+            worker.sensorHistory = sensorResult.data;
             if (latestSensor.sos === true) {
                 appState.alerts.unshift({
                     id: `SOS-${worker.worker_id}-${Date.now()}`,
@@ -115,7 +116,7 @@ async function loadWorkersFromBackend() {
         }
 
         appState.workers = workers.filter(worker => worker.sensorData);
-
+        
         renderDashboard();
         renderWorkersPage();
 
@@ -129,7 +130,31 @@ async function loadWorkersFromBackend() {
         console.error("❌ Worker data loading failed:", error);
     }
 }
+async function loadRiskHistory() {
+    try {
+        const { data: sessionData } = await supabaseClient.auth.getSession();
+        const token = sessionData?.session?.access_token;
 
+        if (!token) return;
+
+        const response = await fetch(`${API_BASE_URL}/risk/RF-001`, {
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Risk API error: ${response.status}`);
+        }
+
+        const result = await response.json();
+        appState.riskHistory = result.data || [];
+
+        console.log(`Loaded ${appState.riskHistory.length} risk predictions`);
+    } catch (error) {
+        console.error('❌ Risk history loading failed:', error);
+    }
+}
    const appState = {
        settings: {
            tempWarn: 36, tempCrit: 40,
@@ -178,7 +203,13 @@ async function loadWorkersFromBackend() {
            { id: 2, type: "WARNING", msg: "Temperature approaching threshold", aiAction: "Monitor worker vitals closely. Recommend 15-minute cooling break in secure area.", worker: "Worker 02", belt: "RF-002", time: "12 min ago", ack: false },
            { id: 1, type: "INFO", msg: "Worker RF-001 entered monitoring Zone A", aiAction: "Standard entry logged. No further action required.", worker: "Worker 01", belt: "RF-001", time: "15 min ago", ack: true }
        ],
-       charts: {} 
+       charts: {
+        temp: null,
+        gas: null,
+        water: null,
+        risk: null
+    },
+    riskHistory: []
    };
    
    // Seed initial log entries (boot + demo worker connections)
@@ -259,6 +290,7 @@ async function loadWorkersFromBackend() {
             errEl.classList.add('hidden');
         }
 
+        await loadRiskHistory();
         await loadWorkersFromBackend();
         updateOperatorDisplay();
 
@@ -303,12 +335,18 @@ async function loadWorkersFromBackend() {
            }
    
            // Force Chart.js to recalculate dimensions since their container just went from display:none to block
-           if(targetPage === 'analytics') {
-               Object.values(appState.charts).forEach(chart => {
-                   chart.resize();
-                   chart.update();
-               });
-           }
+           if (targetPage === 'analytics') {
+            if (!appState.charts.temp) {
+                initCharts();
+            }
+        
+            requestAnimationFrame(() => {
+                Object.values(appState.charts).forEach(chart => {
+                    chart.resize();
+                    chart.update();
+                });
+            });
+        }
        });
    });
    
@@ -741,6 +779,11 @@ body.innerHTML = `
    
    // --- Chart.js ---
    function initCharts() {
+    Object.values(appState.charts).forEach(chart => {
+        if (chart) chart.destroy();
+    });
+
+    Chart.defaults.color = '#94a3b8';
        Chart.defaults.color = '#94a3b8';
        Chart.defaults.borderColor = '#2a303c';
        Chart.defaults.font.family = "'Inter', sans-serif";
@@ -760,12 +803,12 @@ body.innerHTML = `
            }
        };
    
-       const createChart = (id, color, initialData) => {
+       const createChart = (id, color, initialData, chartLabels) => {
            const ctx = document.getElementById(id).getContext('2d');
            return new Chart(ctx, {
                type: 'line',
                data: {
-                   labels: ['10m', '8m', '6m', '4m', '2m', 'Now'],
+                    labels: chartLabels,
                    datasets: [{
                        data: initialData,
                        borderColor: color,
@@ -777,10 +820,67 @@ body.innerHTML = `
            });
        };
    
-       appState.charts.temp = createChart('chart-temp', '#f59e0b', [32, 32.5, 33, 34.5, 36.1, 36.5]);
-       appState.charts.gas = createChart('chart-gas', '#ef4444', [410, 420, 450, 480, 500, 510]);
-       appState.charts.water = createChart('chart-water', '#3b82f6', [10, 10, 12, 15, 18, 22]);
-       appState.charts.risk = createChart('chart-risk', '#f97316', [20, 25, 30, 45, 60, 65]);
+       const allReadings = appState.workers
+       .flatMap(worker => worker.sensorHistory || [])
+       .filter(reading => reading.recorded_at)
+       .sort((a, b) => new Date(a.recorded_at) - new Date(b.recorded_at));
+   
+   const tenMinutesAgo = Date.now() - (10 * 60 * 1000);
+   
+   let readings = allReadings.filter(
+       reading => new Date(reading.recorded_at).getTime() >= tenMinutesAgo
+   );
+   
+   if (readings.length < 2) {
+       readings = allReadings.slice(-6);
+   }
+
+    const labels = readings.map(reading => {
+    const date = new Date(reading.recorded_at);
+    return date.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+});
+const riskReadings = appState.riskHistory
+    .filter(risk => risk.created_at)
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+    .slice(-6);
+
+const riskLabels = riskReadings.map(risk => {
+    const date = new Date(risk.created_at);
+    return date.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+});
+appState.charts.risk = createChart(
+    'chart-risk',
+    '#f97316',
+    riskReadings.map(r => r.risk_score ?? 0),
+    riskLabels
+);
+
+appState.charts.temp = createChart(
+        'chart-temp',
+        '#f59e0b',
+        readings.map(r => r.temperature_c ?? 0),
+        labels
+    );
+
+    appState.charts.gas = createChart(
+        'chart-gas',
+        '#ef4444',
+        readings.map(r => r.gas_raw ?? 0),
+        labels
+    );
+
+    appState.charts.water = createChart(
+        'chart-water',
+        '#3b82f6',
+        readings.map(r => r.water_level_cm ?? 0),
+        labels
+    );
    }
    
    // --- Background Simulator Loop ---
@@ -840,24 +940,25 @@ body.innerHTML = `
            }
    
        }, appState.settings.refreshInterval * 1000);
-   }   document.addEventListener('DOMContentLoaded', () => {
-       testBackendConnection();
-       loadWorkersFromBackend();
-       renderDashboard();
-       renderWorkersPage();
-       renderAlerts();
-       renderActivityLog();
-       initCharts();
-       startClock();
-       // Live backend data refresh
-       loadWorkersFromBackend();
-       document.getElementById('log-alerts')?.addEventListener('change', () => {
-           appState.settings.logAlerts = document.getElementById('log-alerts').checked;
-       });
-       const loginForm = document.getElementById('login-form');
-       if (loginForm) loginForm.addEventListener('submit', window.handleLoginSubmit);
-       updateOperatorDisplay();
-   });
+   }  document.addEventListener('DOMContentLoaded', async () => {
+    testBackendConnection();
+
+    await loadWorkersFromBackend();
+
+    renderAlerts();
+    renderActivityLog();
+
+    startClock();
+
+    document.getElementById('log-alerts')?.addEventListener('change', () => {
+        appState.settings.logAlerts = document.getElementById('log-alerts').checked;
+    });
+
+    const loginForm = document.getElementById('login-form');
+    if (loginForm) loginForm.addEventListener('submit', window.handleLoginSubmit);
+
+    updateOperatorDisplay();
+});
 
    function updateOperatorDisplay() {
        const el = document.getElementById('operator-display');
