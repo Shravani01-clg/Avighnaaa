@@ -170,6 +170,19 @@ async function loadWorkersFromBackend() {
         console.error("❌ Worker data loading failed:", error);
     }
 }
+let backendRefreshTimer = null;
+
+function startBackendRefresh() {
+    if (backendRefreshTimer) {
+        clearInterval(backendRefreshTimer);
+    }
+
+    backendRefreshTimer = setInterval(async () => {
+        await loadRiskHistory();
+        await loadAlertsFromBackend();
+        await loadWorkersFromBackend();
+    }, appState.settings.refreshInterval * 1000);
+}
 async function loadRiskHistory() {
     try {
         const { data: sessionData } = await supabaseClient.auth.getSession();
@@ -333,6 +346,7 @@ async function loadRiskHistory() {
         await loadRiskHistory();
         await loadAlertsFromBackend();
         await loadWorkersFromBackend();
+        startBackendRefresh();
         updateOperatorDisplay();
 
     } catch (error) {
@@ -696,6 +710,9 @@ body.innerHTML = `
            `;
            tbody.appendChild(tr);
        });
+
+       const totalCount = appState.workers.length;
+       document.getElementById('workers-total-count').innerText =totalCount < 10 ? '0' + totalCount : totalCount;
    
        document.getElementById('workers-safe-count').innerText = safeCount < 10 ? '0'+safeCount : safeCount;
        document.getElementById('workers-obs-count').innerText = obsCount < 10 ? '0'+obsCount : obsCount;
@@ -739,18 +756,22 @@ body.innerHTML = `
                `;
            }
    
-           // Full Page HTML
-           pageContainer.innerHTML += `
-               <div class="alert-item ${lowerType}" style="${alert.ack ? 'opacity: 0.5' : ''}">
-                   <div class="alert-icon"><i data-lucide="${iconMap[alert.type]}"></i></div>
-                   <div class="alert-content">
-                       <div class="alert-title">${alert.type}: ${alert.msg}</div>
-                       <div class="alert-meta">${alert.worker} &middot; ${alert.belt} &middot; Sensor triggered &middot; ${alert.time}</div>
-                       ${aiHtml}
-                   </div>
-                   ${!alert.ack ? `<button class="btn btn-small" style="margin-left: 12px; height: fit-content;" onclick="ackAlert(${alert.id})">Acknowledge</button>` : `<span class="badge badge-safe" style="margin-left: 12px;">Acknowledged</span>`}
-               </div>
-           `;
+          // Full Page HTML
+            pageContainer.innerHTML += `
+            <div class="alert-item ${lowerType}" style="${alert.ack ? 'opacity: 0.5' : ''}">
+            <div class="alert-icon"><i data-lucide="${iconMap[alert.type]}"></i></div>
+            <div class="alert-content">
+            <div class="alert-title">${alert.type}: ${alert.msg}</div>
+            <div class="alert-meta">${alert.worker} &middot; ${alert.belt} &middot; Sensor triggered &middot; ${alert.time}</div>
+        ${aiHtml}
+    </div>
+    ${
+        !alert.ack
+            ? `<button class="btn btn-small" style="margin-left: 12px; height: fit-content;" onclick="ackAlert('${alert.id}')">Acknowledge</button>`
+            : `<span class="badge badge-safe" style="margin-left: 12px;">Acknowledged</span>`
+    }
+    </div>
+`;
        });
    
        const sidebarBadge = document.getElementById('sidebar-alert-badge');
@@ -925,63 +946,7 @@ appState.charts.temp = createChart(
    }
    
    // --- Background Simulator Loop ---
-   function startSimulation() {
-       setInterval(() => {
-           appState.workers.forEach(worker => {
-               let d = worker.sensorData;
-               const noise = () => (Math.random() * 0.4) - 0.2;
-               
-               d.temperature_c += noise();
-               d.gas_raw += (Math.random() * 4) - 2;
-               
-               if(worker.workerId === "Worker 02") {
-                   d.water_level_cm += 0.1; 
-               } else {
-                   d.water_level_cm += noise() * 0.1;
-               }
-   
-               if(d.temperature_c < 20) d.temperature_c = 20;
-               if(d.gas_raw < 300) d.gas_raw = 300;
-               if(d.water_level_cm < 0) d.water_level_cm = 0;
-               
-               d.timestamp = new Date().toISOString();
-           });
-   
-           // Simulating a random future alert with an AI suggestion
-           if(Math.random() < 0.01) {
-               appState.alerts.unshift({
-                   id: Date.now(),
-                   type: "WARNING",
-                   msg: "Simulated motion anomaly detected",
-                   aiAction: "Radio worker to confirm status. Monitor accelerometer graph closely for the next 5 minutes.",
-                   worker: "Worker 01", belt: "RF-001",
-                   time: "Just now", ack: false
-               });
-           }
-   
-           renderDashboard();
-           renderWorkersPage();
-           renderAlerts();
-           
-           const tempChart = appState.charts.temp;
-           tempChart.data.datasets[0].data.shift();
-           if (appState.workers.length > 0) {
-            tempChart.data.datasets[0].data.push(
-                appState.workers[0].sensorData.temperature_c
-            );
-        }   
-           tempChart.update();
-   
-           // Update active modal data if it's currently open
-           if (!document.getElementById('worker-modal').classList.contains('hidden')) {
-               const currentTitle = document.getElementById('modal-worker-name').innerText;
-               const workerName = currentTitle.split(' ')[0] + ' ' + currentTitle.split(' ')[1]; 
-               openModal(workerName); // Refresh the modal with live data
-               if (typeof renderModalLiveTracking === 'function') renderModalLiveTracking();
-           }
-   
-       }, appState.settings.refreshInterval * 1000);
-   }  document.addEventListener('DOMContentLoaded', async () => {
+   document.addEventListener('DOMContentLoaded', async () => {
     testBackendConnection();
 
     await loadWorkersFromBackend();
