@@ -849,7 +849,8 @@ body.innerHTML = `
        renderActivityLog();
        initCharts();
        startClock();
-       startSimulation();
+       // Live backend data refresh
+       loadWorkersFromBackend();
        document.getElementById('log-alerts')?.addEventListener('change', () => {
            appState.settings.logAlerts = document.getElementById('log-alerts').checked;
        });
