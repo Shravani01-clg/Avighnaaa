@@ -36,6 +36,46 @@ async function testBackendConnection() {
         return false;
     }
 }
+async function loadAlertsFromBackend() {
+    try {
+        const { data: sessionData } = await supabaseClient.auth.getSession();
+        const token = sessionData?.session?.access_token;
+
+        if (!token) return;
+
+        const response = await fetch(`${API_BASE_URL}/alerts/RF-001`, {
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Alerts API error: ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        appState.alerts = (result.data || []).map(alert => ({
+            id: alert.id,
+            type: alert.severity === 'critical' ? 'CRITICAL' :
+                  alert.severity === 'warning' ? 'WARNING' : 'INFO',
+            msg: alert.message,
+            aiAction: '',
+            worker: 'Worker',
+            belt: alert.device_id,
+            time: alert.created_at
+                ? new Date(alert.created_at).toLocaleString()
+                : 'Recently',
+            ack: alert.is_resolved
+        }));
+
+        console.log(`Loaded ${appState.alerts.length} alerts`);
+        renderAlerts();
+
+    } catch (error) {
+        console.error('❌ Alerts loading failed:', error);
+    }
+}
 async function loadWorkersFromBackend() {
     try {
         const { data: { session } } = await supabaseClient.auth.getSession();
@@ -291,6 +331,7 @@ async function loadRiskHistory() {
         }
 
         await loadRiskHistory();
+        await loadAlertsFromBackend();
         await loadWorkersFromBackend();
         updateOperatorDisplay();
 
