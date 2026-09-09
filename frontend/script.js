@@ -77,7 +77,7 @@ async function loadWorkersFromBackend() {
 
         for (const worker of workers) {
             const device = devices.find(
-                d => d.worker_id === worker.worker_id
+                d => d.worker_id === worker.id
             );
 
             if (!device) continue;
@@ -100,6 +100,18 @@ async function loadWorkersFromBackend() {
             worker.battery = device.battery ?? 100;
             worker.location = worker.mine_location || "Unknown";
             worker.sensorData = latestSensor;
+            if (latestSensor.sos === true) {
+                appState.alerts.unshift({
+                    id: `SOS-${worker.worker_id}-${Date.now()}`,
+                    type: "CRITICAL",
+                    msg: "SOS button pressed. Immediate assistance required.",
+                    aiAction: "Contact the worker immediately and dispatch emergency assistance to the reported location.",
+                    worker: worker.name || worker.worker_id,
+                    belt: device.device_id,
+                    time: "Just now",
+                    ack: false
+                });
+            }
         }
 
         appState.workers = workers.filter(worker => worker.sensorData);
@@ -210,28 +222,55 @@ async function loadWorkersFromBackend() {
        updateOperatorDisplay();
    }
 
-   window.handleLoginSubmit = function(e) {
-       e.preventDefault();
-       const userEl = document.getElementById('login-user');
-       const passEl = document.getElementById('login-pass');
-       const errEl = document.getElementById('login-error');
-       const user = (userEl.value || '').trim();
-       const pass = (passEl.value || '').trim();
+   window.handleLoginSubmit = async function(e) {
+    e.preventDefault();
 
-       // Demo credentials: operator / admin
-       if (user === 'operator' && pass === 'admin') {
-           setAuthenticated(user);
-           userEl.value = '';
-           passEl.value = '';
-           if (errEl) errEl.classList.add('hidden');
-       } else {
-           if (errEl) {
-               errEl.classList.remove('hidden');
-               setTimeout(() => errEl.classList.add('hidden'), 4000);
-           }
-       }
-       updateOperatorDisplay();
-   };
+    const userEl = document.getElementById('login-user');
+    const passEl = document.getElementById('login-pass');
+    const errEl = document.getElementById('login-error');
+
+    const user = (userEl.value || '').trim();
+    const pass = (passEl.value || '').trim();
+
+    try {
+        const { data, error } = await supabaseClient.auth.signInWithPassword({
+            email: user,
+            password: pass
+        });
+
+        if (error) {
+            console.error("❌ Login failed:", error.message);
+
+            if (errEl) {
+                errEl.textContent = "Invalid email or password.";
+                errEl.classList.remove('hidden');
+                setTimeout(() => errEl.classList.add('hidden'), 4000);
+            }
+
+            return;
+        }
+
+        setAuthenticated(data.user.email);
+
+        userEl.value = '';
+        passEl.value = '';
+
+        if (errEl) {
+            errEl.classList.add('hidden');
+        }
+
+        await loadWorkersFromBackend();
+        updateOperatorDisplay();
+
+    } catch (error) {
+        console.error("❌ Login error:", error);
+
+        if (errEl) {
+            errEl.textContent = "Unable to sign in. Please try again.";
+            errEl.classList.remove('hidden');
+        }
+    }
+};
 
    window.signOut = signOut;
 
@@ -285,32 +324,68 @@ async function loadWorkersFromBackend() {
        const { status, risk } = evaluateStatus(worker);
        const d = worker.sensorData;
        
-       document.getElementById('modal-worker-name').innerText = worker.workerId + ' &middot; Detailed Telemetry';
+       document.getElementById('modal-worker-name').innerText =
+    `${worker.name || worker.workerId} · Detailed Telemetry`;
        
        const body = document.getElementById('modal-worker-body');
-       body.innerHTML = `
-           <div class="detail-grid">
-               <div class="detail-item">
-                   <div class="detail-label">Status & Risk</div>
-                   <div class="detail-value ${getStatusColor(status)}">${status} (Risk: ${risk}/100)</div>
-               </div>
-               <div class="detail-item">
-                   <div class="detail-label">Belt ID / Location</div>
-                   <div class="detail-value">${d.device_id} &middot; ${worker.location}</div>
-               </div>
-               <div class="detail-item">
-                   <div class="detail-label">Temperature</div>
-                   <div class="detail-value ${d.temperature_c >= appState.settings.tempWarn ? getStatusColor(status) : ''}">${d.temperature_c.toFixed(2)} &deg;C</div>
-               </div>
-               <div class="detail-item">
-                   <div class="detail-label">Gas Level</div>
-                   <div class="detail-value ${d.gas_raw >= appState.settings.gasWarn ? getStatusColor(status) : ''}">${Math.round(d.gas_raw)} raw</div>
-               </div>
-               <div class="detail-item">
-                   <div class="detail-label">Water Level</div>
-                   <div class="detail-value ${d.water_level_cm >= appState.settings.waterWarn ? getStatusColor(status) : ''}">${d.water_level_cm.toFixed(2)} cm</div>
-               </div>
-               <div class="detail-item">
+body.innerHTML = `
+    <div class="detail-grid">
+
+        <div class="detail-item" style="grid-column: 1 / -1;">
+            <div class="detail-label">Worker Profile</div>
+            <div class="detail-value">
+                ${worker.name || 'N/A'} &middot; ${worker.worker_id || worker.workerId}
+            </div>
+        </div>
+
+        <div class="detail-item">
+            <div class="detail-label">Age</div>
+            <div class="detail-value">${worker.age ?? 'N/A'}</div>
+        </div>
+
+        <div class="detail-item">
+            <div class="detail-label">Gender</div>
+            <div class="detail-value">${worker.gender || 'N/A'}</div>
+        </div>
+
+        <div class="detail-item">
+            <div class="detail-label">Contact</div>
+            <div class="detail-value">${worker.contact_number || 'N/A'}</div>
+        </div>
+
+        <div class="detail-item">
+            <div class="detail-label">Shift</div>
+            <div class="detail-value">${worker.shift || 'N/A'}</div>
+        </div>
+
+        <div class="detail-item" style="grid-column: 1 / -1;">
+            <div class="detail-label">Mine Location</div>
+            <div class="detail-value">${worker.mine_location || worker.location || 'N/A'}</div>
+        </div>
+
+        <div class="detail-item">
+            <div class="detail-label">Status & Risk</div>
+            <div class="detail-value ${getStatusColor(status)}">${status} (Risk: ${risk}/100)</div>
+        </div>
+               
+        <div class="detail-item">
+            <div class="detail-label">Belt ID / Location</div>
+            <div class="detail-value">${d.device_id} &middot; ${worker.location}</div>
+        </div>
+            
+            <div class="detail-item">
+                <div class="detail-label">Temperature</div>
+                <div class="detail-value ${d.temperature_c >= appState.settings.tempWarn ? getStatusColor(status) : ''}">${d.temperature_c.toFixed(2)} &deg;C</div>
+            </div>
+        <div class="detail-item">
+                <div class="detail-label">Gas Level</div>
+                <div class="detail-value ${d.gas_raw >= appState.settings.gasWarn ? getStatusColor(status) : ''}">${Math.round(d.gas_raw)} raw</div>
+        </div>
+            <div class="detail-item">
+                <div class="detail-label">Water Level</div>
+                <div class="detail-value ${d.water_level_cm >= appState.settings.waterWarn ? getStatusColor(status) : ''}">${d.water_level_cm.toFixed(2)} cm</div>
+        </div>
+            <div class="detail-item">
                    <div class="detail-label">Battery / SOS</div>
                    <div class="detail-value">${worker.battery}% / ${d.sos ? '<span class="text-critical">ACTIVE</span>' : '<span class="text-safe">Normal</span>'}</div>
                </div>
@@ -483,7 +558,7 @@ async function loadWorkersFromBackend() {
                <div class="worker-card-header">
                    <div class="worker-identity">
                        <!-- Added onclick event here to open modal -->
-                       <strong class="clickable-name" onclick="openModal('${worker.workerId}')">${worker.workerId}</strong>
+                       <strong class="clickable-name" onclick="openModal('${worker.workerId}')">${worker.name || worker.workerId}</strong>
                        <span>Belt: ${d.device_id}</span>
                    </div>
                    <div class="badge ${getBadgeClass(status)}">${status}</div>
@@ -531,7 +606,7 @@ async function loadWorkersFromBackend() {
            const tr = document.createElement('tr');
            tr.innerHTML = `
                <!-- Make name clickable inside the table too -->
-               <td><strong class="clickable-name" onclick="openModal('${worker.workerId}')">${worker.workerId}</strong></td>
+               <td><strong class="clickable-name" onclick="openModal('${worker.workerId}')">${worker.name || worker.workerId}</strong></td>
                <td class="data-font">${d.device_id}</td>
                <td><span class="badge ${getBadgeClass(status)}">${status}</span></td>
                <td class="data-font ${d.temperature_c >= appState.settings.tempWarn ? getStatusColor(status) : ''}">${d.temperature_c.toFixed(1)}</td>
@@ -753,7 +828,7 @@ async function loadWorkersFromBackend() {
             tempChart.data.datasets[0].data.push(
                 appState.workers[0].sensorData.temperature_c
             );
-        }
+        }   
            tempChart.update();
    
            // Update active modal data if it's currently open
