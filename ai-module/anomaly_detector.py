@@ -188,13 +188,13 @@ class AnomalyDetector:
             message = "Normal pattern"
 
         return {
-            "is_anomaly": is_anomaly,
-            "anomaly_score": round(normalized_score, 4),
-            "raw_score": round(score, 4),
-            "confidence": round(min(normalized_score * 2, 1.0), 4),
-            "bounds_violations": violations,
-            "message": message,
-        }
+    "is_anomaly": bool(is_anomaly),
+    "anomaly_score": round(normalized_score, 4),
+    "raw_score": round(score, 4),
+    "confidence": round(min(normalized_score * 2, 1.0), 4),
+    "bounds_violations": violations,
+    "message": message,
+}
 
     def predict_batch(self, readings: pd.DataFrame) -> pd.DataFrame:
         """Predict anomalies for a batch of readings."""
