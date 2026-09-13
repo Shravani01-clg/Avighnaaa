@@ -444,25 +444,45 @@
 
                         <div class="ai-content">
 
-                            <!-- AI SCORES -->
-                            <div class="ai-scores">
+                            <!-- AI RISK HERO -->
+                            <div class="ai-hero" id="ai-hero" data-state="idle">
 
-                                <!-- AI RISK SCORE -->
-                                <div>
+                                <div class="ai-hero-main">
 
                                     <div class="label">
                                         AI Risk Score
                                     </div>
 
                                     <div
-                                        class="value text-warning"
+                                        class="value ai-hero-value text-warning"
                                         id="ai-risk-score"
                                     >
                                         -- / 100
                                     </div>
 
+                                    <div class="ai-hero-sub">
+                                        Risk engine score &middot; AI module can upgrade
+                                    </div>
+
                                 </div>
 
+                                <div class="ai-hero-side">
+
+                                    <span class="risk-pill" id="ai-state-pill" data-level="none">
+                                        NO DATA
+                                    </span>
+
+                                    <div class="ai-hero-meta" id="ai-hero-meta">
+                                        Waiting for AI analysis&hellip;
+                                    </div>
+
+                                </div>
+
+                            </div>
+
+
+                            <!-- AI SECONDARY SCORES -->
+                            <div class="ai-scores">
 
                                 <!-- PREDICTED RISK -->
                                 <div>
@@ -472,7 +492,7 @@
                                     </div>
 
                                     <div
-                                        class="value text-critical"
+                                        class="value"
                                         id="ai-predicted-risk"
                                     >
                                         --
@@ -491,6 +511,23 @@
                                     <div
                                         class="value"
                                         id="ai-model-confidence"
+                                    >
+                                        --
+                                    </div>
+
+                                </div>
+
+
+                                <!-- LAST ANALYSIS -->
+                                <div>
+
+                                    <div class="label">
+                                        Last Analysis
+                                    </div>
+
+                                    <div
+                                        class="value"
+                                        id="ai-last-updated"
                                     >
                                         --
                                     </div>
@@ -608,6 +645,22 @@
                         <div
                             class="card-value text-safe"
                             id="workers-safe-count"
+                        >
+                            00
+                        </div>
+
+                    </div>
+
+
+                    <div class="summary-card outline-high">
+
+                        <div class="card-label">
+                            High Risk
+                        </div>
+
+                        <div
+                            class="card-value text-high"
+                            id="workers-high-count"
                         >
                             00
                         </div>
@@ -774,6 +827,25 @@
 
                     </div>
 
+                    <!-- Shown only while an SOS condition is active (Part 4) -->
+                    <div
+                        id="alerts-emergency-strip"
+                        class="alert-emergency-strip"
+                        style="display: none;"
+                    >
+                        <i data-lucide="siren"></i>
+                        <span class="strip-text">
+                            SOS alert active &mdash; Emergency Mode engaged
+                        </span>
+                        <button
+                            type="button"
+                            class="strip-link"
+                            onclick="emergencyOpen()"
+                        >
+                            Open Emergency Mode
+                        </button>
+                    </div>
+
 
                     <div
                         class="alert-list full-width"
@@ -799,9 +871,12 @@
 
                     <div class="chart-card">
 
-                        <h3>
-                            Temperature Trend (&deg;C)
-                        </h3>
+                        <div class="chart-head">
+                            <h3>
+                                Temperature Trend
+                            </h3>
+                            <span class="chart-unit">&deg;C</span>
+                        </div>
 
                         <div class="chart-container">
 
@@ -814,9 +889,12 @@
 
                     <div class="chart-card">
 
-                        <h3>
-                            Gas Level Trend (raw)
-                        </h3>
+                        <div class="chart-head">
+                            <h3>
+                                Gas Level Trend
+                            </h3>
+                            <span class="chart-unit">raw ADC</span>
+                        </div>
 
                         <div class="chart-container">
 
@@ -829,9 +907,12 @@
 
                     <div class="chart-card">
 
-                        <h3>
-                            Water Level Trend (cm)
-                        </h3>
+                        <div class="chart-head">
+                            <h3>
+                                Water Level Trend
+                            </h3>
+                            <span class="chart-unit">cm</span>
+                        </div>
 
                         <div class="chart-container">
 
@@ -844,15 +925,22 @@
 
                     <div class="chart-card">
 
-                        <h3>
-                            System Risk Score Trend
-                        </h3>
+                        <div class="chart-head">
+                            <h3>
+                                System Risk Score Trend
+                            </h3>
+                            <span class="chart-unit">0&ndash;100</span>
+                        </div>
 
                         <div class="chart-container">
 
                             <canvas id="chart-risk"></canvas>
 
                         </div>
+
+                        <p class="chart-caption">
+                            Final risk score &mdash; rule engine combined with AI risk upgrade
+                        </p>
 
                     </div>
 
@@ -1143,6 +1231,80 @@
 
         </main>
 
+    </div>
+
+
+    <!-- =========================================================
+         SOS EMERGENCY MODE
+         Activated by script.js when live sensor data reports sos === true.
+         All content is rendered from real backend data — no mock values.
+    ========================================================== -->
+    <div id="emergency-overlay" class="hidden">
+
+        <div class="emergency-banner">
+
+            <h2>
+                <i data-lucide="siren"></i>
+                EMERGENCY MODE ACTIVATED
+            </h2>
+
+            <span class="sos-indicator">
+                <i data-lucide="radio"></i>
+                SOS ACTIVE
+            </span>
+
+            <div class="emergency-sub">
+                SOS ALERT &mdash; IMMEDIATE ATTENTION REQUIRED &middot;
+                <span id="emergency-count">0 workers affected</span>
+            </div>
+
+        </div>
+
+        <div class="emergency-body" id="emergency-workers">
+            <!-- Emergency worker cards rendered by script.js from live sensor data -->
+        </div>
+
+        <div class="emergency-footer">
+
+            <span class="emergency-note">
+                Return to the normal dashboard unlocks automatically when the SOS condition is no longer active.
+            </span>
+
+            <div class="emergency-footer-actions">
+
+                <button
+                    type="button"
+                    class="btn-emergency-min"
+                    onclick="emergencyToggleMinimize()"
+                >
+                    Minimize to banner
+                </button>
+
+                <button
+                    type="button"
+                    class="btn-emergency-return"
+                    id="emergency-return"
+                    disabled
+                    title="SOS still active"
+                >
+                    Return to Dashboard
+                </button>
+
+            </div>
+
+        </div>
+
+    </div>
+
+    <!-- Minimized emergency banner (shown while SOS is still active) -->
+    <div
+        id="emergency-mini-bar"
+        onclick="emergencyToggleMinimize()"
+        title="Click to reopen Emergency Mode"
+    >
+        <i data-lucide="siren"></i>
+        <span id="emergency-mini-bar-text">SOS ACTIVE</span>
+        <span class="mini-restore">Reopen</span>
     </div>
 
 

@@ -20,6 +20,241 @@ const supabaseClient = supabase.createClient(
     SUPABASE_KEY
 );
 
+// ==========================================================================
+// UI Helpers (Parts 1, 2, 4) — shared severity/risk-tier mapping.
+// These map REAL backend values (risk levels LOW/MEDIUM/HIGH/CRITICAL and
+// alert severities/types) to CSS classes. No data is invented here.
+// ==========================================================================
+function riskTierClass(level) {
+    switch ((level || '').toUpperCase()) {
+        case 'CRITICAL': return 'text-critical';
+        case 'HIGH': return 'text-high';
+        case 'MEDIUM': return 'text-warning';
+        case 'LOW': return 'text-safe';
+        default: return '';
+    }
+}
+
+function tierOutlineClass(level) {
+    switch ((level || '').toUpperCase()) {
+        case 'CRITICAL': return 'outline-critical';
+        case 'HIGH': return 'outline-high';
+        case 'MEDIUM': return 'outline-warning';
+        case 'LOW': return 'outline-safe';
+        default: return '';
+    }
+}
+
+function severityTier(severity) {
+    const s = (severity || '').toUpperCase();
+    if (s === 'CRITICAL') return 'critical';
+    if (s === 'HIGH' || s === 'WARNING') return 'warning';
+    if (s === 'MEDIUM' || s === 'INFO') return 'info';
+    return 'info';
+}
+
+function typeChipClass(alertType) {
+    const t = (alertType || '').toUpperCase();
+    if (t === 'SOS') return 'chip-sos';
+    if (t === 'ANOMALY') return 'chip-anomaly';
+    if (t === 'AI_RISK_UPGRADE') return 'chip-ai';
+    if (t === 'FALL_DETECTED' || t === 'COMBINED_DANGER') return 'chip-critical';
+    if (t === 'GAS_DANGER' || t === 'FLOOD_DANGER' || t === 'TEMP_DANGER') return 'chip-high';
+    return '';
+}
+
+function setRiskPill(level) {
+    const pill = document.getElementById('ai-state-pill');
+    const hero = document.getElementById('ai-hero');
+    const normalized = (level || '').toUpperCase();
+
+    if (pill) {
+        pill.dataset.level = normalized || 'none';
+        pill.innerText = normalized || 'NO DATA';
+    }
+
+    if (hero) {
+        hero.dataset.state = normalized || 'idle';
+    }
+}
+
+// Part 1: honest empty/loading state for the AI panel — never invents values.
+function resetAIPanel() {
+    setRiskPill(null);
+
+    const aiHeroMeta = document.getElementById('ai-hero-meta');
+    if (aiHeroMeta) aiHeroMeta.innerText = 'Waiting for AI analysis\u2026';
+
+    const aiModelConfidence = document.getElementById('ai-model-confidence');
+    if (aiModelConfidence) {
+        aiModelConfidence.innerText = '--';
+        aiModelConfidence.title = 'Confidence not provided by the risk API';
+    }
+
+    const aiLastUpdated = document.getElementById('ai-last-updated');
+    if (aiLastUpdated) aiLastUpdated.innerText = '--';
+
+    const aiFactorsList = document.getElementById('ai-factors-list');
+    if (aiFactorsList) aiFactorsList.innerHTML = '<li>Waiting for AI analysis\u2026</li>';
+
+    const aiRecommendation = document.getElementById('ai-recommendation');
+    if (aiRecommendation) aiRecommendation.innerHTML = '<strong>AI Recommendation:</strong><br>Waiting for latest AI risk analysis.';
+}
+
+function safeText(value, fallback = 'N/A') {
+    if (value === null || value === undefined || value === '') return fallback;
+    return String(value);
+}
+
+function emergencySensorValue(value, digits = 1, suffix = '') {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return 'N/A';
+    return `${num.toFixed(digits)}${suffix}`;
+}
+
+// ==========================================================================
+// Part 3: SOS Emergency Mode.
+// Triggered ONLY by real sensor data (sos === true) arriving through the
+// existing loadWorkersFromBackend() data flow. No mock SOS data anywhere.
+// ==========================================================================
+const emergencyState = {
+    activeDeviceIds: new Set(),
+    minimized: false
+};
+
+function emergencyRiskInfo(worker) {
+    const fallback = evaluateStatus(worker);
+    const risk = worker.aiRisk;
+    return {
+        score: risk && Number.isFinite(Number(risk.score)) ? Math.round(Number(risk.score)) : fallback.risk,
+        level: risk?.level || fallback.status
+    };
+}
+
+function emergencyRefresh() {
+    const affected = appState.workers.filter(
+        worker => worker.sensorData && worker.sensorData.sos === true
+    );
+
+    // Track newly activated SOS devices (log once per device)
+    affected.forEach(worker => {
+        const deviceId = worker.sensorData.device_id;
+        if (!emergencyState.activeDeviceIds.has(deviceId)) {
+            emergencyState.activeDeviceIds.add(deviceId);
+            addLogEntry('ALERT', 'tag-alert', `EMERGENCY: SOS activated by ${worker.name || worker.workerId} (Belt ${deviceId})`);
+        }
+    });
+
+    // Clear devices whose SOS is no longer active
+    [...emergencyState.activeDeviceIds].forEach(deviceId => {
+        const stillActive = affected.some(worker => worker.sensorData.device_id === deviceId);
+        if (!stillActive) {
+            emergencyState.activeDeviceIds.delete(deviceId);
+            addLogEntry('STATUS', 'tag-status', `SOS cleared for Belt ${deviceId}`);
+        }
+    });
+
+    const overlay = document.getElementById('emergency-overlay');
+    const miniBar = document.getElementById('emergency-mini-bar');
+
+    if (affected.length > 0) {
+        renderEmergencyOverlay(affected);
+        document.body.classList.add('emergency-active');
+
+        if (emergencyState.minimized) {
+            overlay?.classList.add('hidden');
+            miniBar?.classList.add('visible');
+            document.body.classList.remove('emergency-fullscreen');
+            const miniText = document.getElementById('emergency-mini-bar-text');
+            if (miniText) {
+                miniText.innerText = affected.length > 1 ? `SOS ACTIVE \u00b7 ${affected.length} WORKERS` : 'SOS ACTIVE';
+            }
+        } else {
+            overlay?.classList.remove('hidden');
+            miniBar?.classList.remove('visible');
+            document.body.classList.add('emergency-fullscreen');
+        }
+    } else {
+        overlay?.classList.add('hidden');
+        miniBar?.classList.remove('visible');
+        document.body.classList.remove('emergency-active');
+        document.body.classList.remove('emergency-fullscreen');
+        emergencyState.minimized = false;
+    }
+
+    const countEl = document.getElementById('emergency-count');
+    if (countEl) {
+        countEl.innerText = `${affected.length} worker${affected.length === 1 ? '' : 's'} affected`;
+    }
+
+    // Return button unlocks ONLY when no SOS is active
+    const returnBtn = document.getElementById('emergency-return');
+    if (returnBtn) {
+        returnBtn.disabled = affected.length > 0;
+        returnBtn.title = affected.length > 0 ? 'SOS still active' : 'Return to the normal dashboard';
+    }
+}
+
+function renderEmergencyOverlay(affectedWorkers) {
+    const container = document.getElementById('emergency-workers');
+    if (!container) return;
+
+    // Most critical worker first — never overwrite one SOS with another
+    const sorted = [...affectedWorkers].sort(
+        (a, b) => emergencyRiskInfo(b).score - emergencyRiskInfo(a).score
+    );
+
+    container.innerHTML = sorted.map(worker => {
+        const d = worker.sensorData;
+        const risk = emergencyRiskInfo(worker);
+        const sosTime = d.timestamp && !Number.isNaN(new Date(d.timestamp).getTime())
+            ? new Date(d.timestamp).toLocaleString()
+            : 'Unknown';
+
+        // Action guidance built ONLY from real sensor values + thresholds
+        const recParts = [
+            'Contact the worker immediately and dispatch assistance to their location.'
+        ];
+        if (Number(d.gas_raw) >= appState.settings.gasWarn) recParts.push('Gas level is elevated \u2014 ensure ventilation before entry.');
+        if (Number(d.water_level_cm) >= appState.settings.waterWarn) recParts.push('Water level is elevated \u2014 verify flood escape route.');
+        if (Number(d.temperature_c) >= appState.settings.tempWarn) recParts.push('Temperature is elevated \u2014 check for heat or equipment hazards.');
+
+        return `
+            <div class="emergency-worker-card">
+                <div class="emergency-worker-header">
+                    <h3>${worker.name || worker.workerId} <span>\u00b7 ID ${worker.worker_id || worker.workerId}</span></h3>
+                    <span class="sos-indicator"><i data-lucide="radio"></i>SOS ACTIVE</span>
+                </div>
+                <div class="emergency-details">
+                    <div class="emergency-detail"><div class="detail-label">Worker ID</div><div class="detail-value">${safeText(worker.worker_id || worker.workerId)}</div></div>
+                    <div class="emergency-detail"><div class="detail-label">Belt / Device</div><div class="detail-value">${safeText(d.device_id)}</div></div>
+                    <div class="emergency-detail"><div class="detail-label">Location</div><div class="detail-value">${safeText(worker.mine_location || worker.location)}</div></div>
+                    <div class="emergency-detail"><div class="detail-label">SOS Time</div><div class="detail-value">${sosTime}</div></div>
+                    <div class="emergency-detail"><div class="detail-label">Temperature</div><div class="detail-value">${emergencySensorValue(d.temperature_c, 1, ' \u00b0C')}</div></div>
+                    <div class="emergency-detail"><div class="detail-label">Gas Level</div><div class="detail-value">${emergencySensorValue(d.gas_raw, 0, ' raw')}</div></div>
+                    <div class="emergency-detail"><div class="detail-label">Water Level</div><div class="detail-value ${Number(d.water_level_cm) >= appState.settings.waterWarn ? 'emg-critical' : ''}">${emergencySensorValue(d.water_level_cm, 1, ' cm')}</div></div>
+                    <div class="emergency-detail"><div class="detail-label">Risk Score / Level</div><div class="detail-value">${risk.score}/100 \u00b7 ${safeText(risk.level)}</div></div>
+                </div>
+                <div class="emergency-recommendation">
+                    <strong>\u26a0\ufe0f IMMEDIATE ATTENTION REQUIRED:</strong> ${recParts.join(' ')}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    lucide.createIcons();
+}
+
+window.emergencyToggleMinimize = function () {
+    emergencyState.minimized = !emergencyState.minimized;
+    emergencyRefresh();
+};
+
+window.emergencyOpen = function () {
+    emergencyState.minimized = false;
+    emergencyRefresh();
+};
+
 async function testBackendConnection() {
     try {
         const response = await fetch("http://localhost:5002/");
@@ -55,19 +290,29 @@ async function loadAlertsFromBackend() {
 
         const result = await response.json();
 
-        appState.alerts = (result.data || []).map(alert => ({
-            id: alert.id,
-            type: alert.severity === 'critical' ? 'CRITICAL' :
-                  alert.severity === 'warning' ? 'WARNING' : 'INFO',
-            msg: alert.message,
-            aiAction: '',
-            worker: 'Worker',
-            belt: alert.device_id,
-            time: alert.created_at
-                ? new Date(alert.created_at).toLocaleString()
-                : 'Recently',
-            ack: alert.is_resolved
-        }));
+        // Part 4: map backend severity correctly (backend sends CRITICAL/HIGH/MEDIUM)
+        // and keep the REAL alert_type (SOS, ANOMALY, AI_RISK_UPGRADE, GAS_DANGER, ...)
+        appState.alerts = (result.data || []).map(alert => {
+            const severityUpper = (alert.severity || '').toUpperCase();
+            const alertTypeUpper = (alert.alert_type || '').toUpperCase();
+
+            return {
+                id: alert.id,
+                type: severityUpper === 'CRITICAL' ? 'CRITICAL' :
+                      severityUpper === 'HIGH' ? 'HIGH' :
+                      severityUpper === 'WARNING' ? 'WARNING' : 'INFO',
+                alertType: alertTypeUpper || undefined,
+                isSOS: alertTypeUpper === 'SOS',
+                msg: alert.message,
+                aiAction: '',
+                worker: 'Worker',
+                belt: alert.device_id,
+                time: alert.created_at
+                    ? new Date(alert.created_at).toLocaleString()
+                    : 'Recently',
+                ack: alert.is_resolved
+            };
+        });
 
         console.log(`Loaded ${appState.alerts.length} alerts`);
         renderAlerts();
@@ -229,6 +474,8 @@ function startBackendRefresh() {
         await loadRiskHistory();
         await loadAlertsFromBackend();
         await loadWorkersFromBackend();
+        // Part 3: keep Emergency Mode in sync with the latest sensor data
+        emergencyRefresh();
     }, appState.settings.refreshInterval * 1000);
 }
 async function loadRiskHistory() {
@@ -325,6 +572,19 @@ async function loadRiskHistory() {
                     `${Math.round(averageRisk)} / 100 Score`;
             }
 
+            // Part 2: color the Overall Risk card by risk tier (LOW/MEDIUM/HIGH/CRITICAL)
+            const overallRiskCard = overallRiskLevel?.closest(".summary-card");
+
+            if (overallRiskCard) {
+                overallRiskCard.classList.remove("outline-safe", "outline-warning", "outline-high", "outline-critical");
+                overallRiskCard.classList.add(tierOutlineClass(overallLevel));
+            }
+
+            if (overallRiskScore) {
+                overallRiskScore.classList.remove("text-safe", "text-warning", "text-high", "text-critical");
+                overallRiskScore.classList.add(riskTierClass(overallLevel));
+            }
+
             // Update AI Risk Score section
             const aiRiskScore =
                 document.getElementById("ai-risk-score");
@@ -336,14 +596,21 @@ async function loadRiskHistory() {
                 document.getElementById("ai-recommendation");
 
             if (aiRiskScore) {
-                aiRiskScore.innerText =
-                    `${Math.round(averageRisk)} / 100`;
+                aiRiskScore.innerHTML =
+                    `${Math.round(averageRisk)} <span class="unit">/ 100</span>`;
+                aiRiskScore.classList.remove("text-safe", "text-warning", "text-high", "text-critical");
+                aiRiskScore.classList.add(riskTierClass(overallLevel));
             }
 
             if (aiPredictedRisk) {
                 aiPredictedRisk.innerText =
                     overallLevel;
+                aiPredictedRisk.classList.remove("text-safe", "text-warning", "text-high", "text-critical");
+                aiPredictedRisk.classList.add(riskTierClass(overallLevel));
             }
+
+            // Part 1: AI state pill (LOW / MEDIUM / HIGH / CRITICAL)
+            setRiskPill(overallLevel);
 
             // Use the latest AI reason as the recommendation
             const latestWorker =
@@ -358,6 +625,54 @@ async function loadRiskHistory() {
                     ${latestWorker.aiRisk.reason}
                 `;
             }
+
+            // Part 1 extras: hero meta, last-updated, factors list and honest confidence.
+            // NOTE: the risk API does not expose ML confidence, so it stays "--"
+            // (with an explanatory tooltip) instead of a fake percentage.
+            const latestAiRisk = latestWorker.aiRisk;
+
+            const aiHeroMeta =
+                document.getElementById("ai-hero-meta");
+
+            if (aiHeroMeta) {
+                aiHeroMeta.innerText = latestAiRisk?.createdAt
+                    ? `Latest analysis \u00b7 ${new Date(latestAiRisk.createdAt).toLocaleTimeString()}`
+                    : "Latest risk engine analysis";
+            }
+
+            const aiModelConfidence =
+                document.getElementById("ai-model-confidence");
+
+            if (aiModelConfidence) {
+                aiModelConfidence.innerText = "--";
+                aiModelConfidence.title = "Confidence not provided by the risk API";
+            }
+
+            const aiLastUpdated =
+                document.getElementById("ai-last-updated");
+
+            if (aiLastUpdated) {
+                aiLastUpdated.innerText = latestAiRisk?.createdAt
+                    ? new Date(latestAiRisk.createdAt).toLocaleTimeString()
+                    : "--";
+            }
+
+            const aiFactorsList =
+                document.getElementById("ai-factors-list");
+
+            if (aiFactorsList) {
+                const reasons = (latestAiRisk?.reason || "")
+                    .split(";")
+                    .map(part => part.trim())
+                    .filter(Boolean);
+
+                aiFactorsList.innerHTML = reasons.length
+                    ? reasons.map(reason => `<li>${reason}</li>`).join("")
+                    : "<li>No major risk factors reported</li>";
+            }
+        } else {
+            // Part 1: honest waiting state — no data, no invented values
+            resetAIPanel();
         }
 
         renderDashboard();
@@ -830,7 +1145,10 @@ body.innerHTML = `
                        <strong class="clickable-name" onclick="openModal('${worker.workerId}')">${worker.name || worker.workerId}</strong>
                        <span>Belt: ${d.device_id}</span>
                    </div>
-                   <div class="badge ${getBadgeClass(status)}">${status}</div>
+                   <div style="display:flex; gap:6px; align-items:center;">
+                       ${d.sos ? '<span class="badge badge-sos">SOS</span>' : ''}
+                       <div class="badge ${getBadgeClass(status)}">${status}</div>
+                   </div>
                </div>
                <div class="worker-metrics">
                    <div class="metric">
@@ -846,14 +1164,19 @@ body.innerHTML = `
                        <span class="metric-value">${isMotion} / ${worker.battery}%</span>
                    </div>
                    <div class="metric">
+                     <span class="metric-label">Risk Score</span>
                      <span class="metric-value ${aiRiskColor}">${Math.round(aiRiskScore)} / 100</span>
                    </div>
                </div>
            `;
+           // Part 2: left edge of the card reflects the worker's risk tier
+           card.classList.remove('risk-edge-safe', 'risk-edge-warning', 'risk-edge-high', 'risk-edge-critical');
+           card.classList.add(`risk-edge-${(aiRiskLevel || 'safe').toLowerCase()}`);
            container.appendChild(card);
        });
    
        const count = appState.workers.length;
+       if (count === 0) return; // Part 2: guard — avoid NaN in summary cards
        document.getElementById('dash-avg-temp').innerHTML = `${(sumTemp/count).toFixed(1)} &deg;C`;
        document.getElementById('dash-avg-gas').innerHTML = `${Math.round(sumGas/count)} <span class="unit">raw</span>`;
        document.getElementById('dash-avg-water').innerHTML = `${(sumWater/count).toFixed(1)} cm`;
@@ -871,12 +1194,7 @@ body.innerHTML = `
         const aiRiskScore = worker.aiRisk?.score ?? risk;
         const aiRiskLevel = worker.aiRisk?.level || status;
     
-        const aiRiskColor =
-            aiRiskLevel === 'CRITICAL' || aiRiskLevel === 'HIGH'
-                ? 'text-critical'
-                : aiRiskLevel === 'MEDIUM'
-                    ? 'text-warning'
-                    : 'text-safe';
+        const aiRiskColor = riskTierClass(aiRiskLevel);
     
         const d = worker.sensorData;
            
@@ -887,7 +1205,12 @@ body.innerHTML = `
                <!-- Make name clickable inside the table too -->
                <td><strong class="clickable-name" onclick="openModal('${worker.workerId}')">${worker.name || worker.workerId}</strong></td>
                <td class="data-font">${d.device_id}</td>
-               <td><span class="badge ${getBadgeClass(status)}">${status}</span></td>
+               <td>
+                   <span style="display:inline-flex; gap:6px; align-items:center;">
+                       ${d.sos ? '<span class="badge badge-sos">SOS</span>' : ''}
+                       <span class="badge ${getBadgeClass(status)}">${status}</span>
+                   </span>
+               </td>
                <td class="data-font ${d.temperature_c >= appState.settings.tempWarn ? getStatusColor(status) : ''}">${d.temperature_c.toFixed(1)}</td>
                <td class="data-font">${Math.round(d.gas_raw)}</td>
                <td class="data-font">${d.water_level_cm.toFixed(1)}</td>
@@ -902,6 +1225,14 @@ body.innerHTML = `
    
        document.getElementById('workers-safe-count').innerText = safeCount < 10 ? '0'+safeCount : safeCount;
        document.getElementById('workers-obs-count').innerText = obsCount < 10 ? '0'+obsCount : obsCount;
+
+       // Part 2: mark the High Risk summary card using the real risk tier
+       const highCount = appState.workers.filter(worker => {
+           const level = (worker.aiRisk?.level || evaluateStatus(worker).status || '').toUpperCase();
+           return level === 'HIGH' || level === 'CRITICAL';
+       }).length;
+
+       document.getElementById('workers-high-count').innerText = highCount < 10 ? '0'+highCount : highCount;
    }
    
    function renderAlerts() {
@@ -911,11 +1242,15 @@ body.innerHTML = `
        dashContainer.innerHTML = ''; pageContainer.innerHTML = '';
        let activeCount = 0, critCount = 0, warnCount = 0;
    
+       // Part 4: count active SOS alerts for the emergency strip
+       const activeSOSCount = appState.alerts.filter(a => !a.ack && a.isSOS).length;
+       const anySOSActive = activeSOSCount > 0 || appState.workers.some(w => w.sensorData?.sos === true);
+
        appState.alerts.forEach(alert => {
            if (!alert.ack) {
                activeCount++;
                if (alert.type === 'CRITICAL') critCount++;
-               if (alert.type === 'WARNING') warnCount++;
+               if (alert.type === 'WARNING' || alert.type === 'HIGH') warnCount++;
            }
    
            const iconMap = { 'CRITICAL': 'alert-triangle', 'WARNING': 'alert-circle', 'INFO': 'info' };
@@ -927,14 +1262,20 @@ body.innerHTML = `
                    <i data-lucide="bot"></i>
                    <div><strong>AI Suggestion:</strong> ${alert.aiAction}</div>
                </div>` : '';
+
+           // Part 4: show the REAL backend alert_type as a chip when present
+           // (SOS, ANOMALY, AI_RISK_UPGRADE, GAS_DANGER, FLOOD_DANGER, ...)
+           const typeChipHtml = alert.alertType
+               ? `<span class="alert-type-chip ${typeChipClass(alert.alertType)}">${alert.alertType}</span>`
+               : '';
    
            // Dashboard HTML
            if (dashContainer.children.length < 3) {
                dashContainer.innerHTML += `
-                   <div class="alert-item ${lowerType}" style="${alert.ack ? 'opacity: 0.5' : ''}">
-                       <div class="alert-icon"><i data-lucide="${iconMap[alert.type]}"></i></div>
+                   <div class="alert-item ${lowerType}${alert.isSOS ? ' sos' : ''}" style="${alert.ack ? 'opacity: 0.5' : ''}">
+                       <div class="alert-icon"><i data-lucide="${iconMap[alert.type] || 'bell'}"></i></div>
                        <div class="alert-content">
-                           <div class="alert-title">${alert.type}: ${alert.msg}</div>
+                           <div class="alert-title">${alert.type}: ${alert.msg}${typeChipHtml}</div>
                            <div class="alert-meta">${alert.worker} &middot; ${alert.belt} &middot; ${alert.time}</div>
                            ${aiHtml}
                        </div>
@@ -944,10 +1285,10 @@ body.innerHTML = `
    
           // Full Page HTML
             pageContainer.innerHTML += `
-            <div class="alert-item ${lowerType}" style="${alert.ack ? 'opacity: 0.5' : ''}">
-            <div class="alert-icon"><i data-lucide="${iconMap[alert.type]}"></i></div>
+            <div class="alert-item ${lowerType}${alert.isSOS ? ' sos' : ''}" style="${alert.ack ? 'opacity: 0.5' : ''}">
+            <div class="alert-icon"><i data-lucide="${iconMap[alert.type] || 'bell'}"></i></div>
             <div class="alert-content">
-            <div class="alert-title">${alert.type}: ${alert.msg}</div>
+            <div class="alert-title">${alert.type}: ${alert.msg}${typeChipHtml}</div>
             <div class="alert-meta">${alert.worker} &middot; ${alert.belt} &middot; Sensor triggered &middot; ${alert.time}</div>
         ${aiHtml}
     </div>
@@ -960,6 +1301,18 @@ body.innerHTML = `
 `;
        });
    
+       // Part 4: emergency strip at the top of the Alerts page while an SOS is active
+       const strip = document.getElementById('alerts-emergency-strip');
+       if (strip) {
+           if (anySOSActive) {
+               strip.style.display = 'flex';
+               strip.querySelector('.strip-text').innerText =
+                   `${activeSOSCount > 0 ? activeSOSCount : appState.workers.filter(w => w.sensorData?.sos === true).length} SOS alert(s) active \u2014 Emergency Mode engaged`;
+           } else {
+               strip.style.display = 'none';
+           }
+       }
+
        const sidebarBadge = document.getElementById('sidebar-alert-badge');
        if(activeCount > 0) {
            sidebarBadge.style.display = 'inline-block'; sidebarBadge.innerText = activeCount;
@@ -1139,6 +1492,9 @@ appState.charts.temp = createChart(
 
     renderAlerts();
     renderActivityLog();
+
+    // Part 3: first Emergency Mode check after initial data load
+    emergencyRefresh();
 
     startClock();
 
