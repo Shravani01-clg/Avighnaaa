@@ -720,42 +720,9 @@ async function loadRiskHistory() {
        logSeq: 0,
        auth: { username: '', authenticated: false },
        
-       // DEMO DATA - Includes full accelerometer + sos values
-       workers: [
-           {
-               workerId: "Worker 01", simulated: false, 
-               sensorData: {
-                   "device_id": "RF-001", "temperature_c": 32.5, "gas_raw": 420, "water_level_cm": 15.0,
-                   "acceleration_x_ms2": 0.20, "acceleration_y_ms2": 0.10, "acceleration_z_ms2": 9.70,
-                   "sos": false, "timestamp": new Date().toISOString()
-               },
-               battery: 92, location: "Zone A - Main Shaft"
-           },
-           {
-               workerId: "Worker 02", simulated: true, 
-               sensorData: {
-                   "device_id": "RF-002", "temperature_c": 36.5, "gas_raw": 510, "water_level_cm": 22.0,
-                   "acceleration_x_ms2": 0.50, "acceleration_y_ms2": 0.10, "acceleration_z_ms2": 9.80,
-                   "sos": false, "timestamp": new Date().toISOString()
-               },
-               battery: 78, location: "Zone B - West Tunnel"
-           },
-           {
-               workerId: "Worker 03", simulated: true, 
-               sensorData: {
-                   "device_id": "RF-003", "temperature_c": 41.2, "gas_raw": 680, "water_level_cm": 10.0,
-                   "acceleration_x_ms2": 0.0, "acceleration_y_ms2": 0.0, "acceleration_z_ms2": 9.81,
-                   "sos": false, "timestamp": new Date().toISOString()
-               },
-               battery: 45, location: "Zone C - Deep Excavation"
-           }
-       ],
-       // Alerts now feature an explicit "aiAction" string for the requested suggestions
-       alerts: [
-           { id: 3, type: "CRITICAL", msg: "Gas level approaching unsafe limit", aiAction: "Initiate immediate evacuation of Zone C. Dispatch emergency ventilation protocols.", worker: "Worker 03", belt: "RF-003", time: "6 min ago", ack: false },
-           { id: 2, type: "WARNING", msg: "Temperature approaching threshold", aiAction: "Monitor worker vitals closely. Recommend 15-minute cooling break in secure area.", worker: "Worker 02", belt: "RF-002", time: "12 min ago", ack: false },
-           { id: 1, type: "INFO", msg: "Worker RF-001 entered monitoring Zone A", aiAction: "Standard entry logged. No further action required.", worker: "Worker 01", belt: "RF-001", time: "15 min ago", ack: true }
-       ],
+       // Live data only — populated from the backend. No demo/fallback values.
+       workers: [],
+       alerts: [],
        charts: {
         temp: null,
         gas: null,
@@ -765,15 +732,9 @@ async function loadRiskHistory() {
     riskHistory: []
    };
    
-   // Seed initial log entries (boot + demo worker connections)
+   // Seed initial log entry (honest boot message only — no simulated status)
    (function seedLog() {
-       const now = new Date();
-       appState.activityLog.push({ ts: new Date(now.getTime() - 120000), tag: 'SYSTEM', tagClass: 'tag-info', msg: 'Control room session started' });
-       appState.activityLog.push({ ts: new Date(now.getTime() - 90000), tag: 'STATUS', tagClass: 'tag-status', msg: 'Backend API connected (Simulated)' });
-       appState.activityLog.push({ ts: new Date(now.getTime() - 60000), tag: 'STATUS', tagClass: 'tag-status', msg: 'Database (Supabase) connected (Simulated)' });
-       appState.workers.forEach(w => {
-           appState.activityLog.push({ ts: new Date(now.getTime() - 15000), tag: 'PING', tagClass: 'tag-ping', msg: `Belt ${w.sensorData.device_id} online \u2013 ${w.workerId} at ${w.location}` });
-       });
+       appState.activityLog.push({ ts: new Date(), tag: 'SYSTEM', tagClass: 'tag-info', msg: 'Control room session started' });
        renderActivityLog();
    })();
 
@@ -1135,7 +1096,20 @@ body.innerHTML = `
    function renderDashboard() {
        const container = document.getElementById('dashboard-workers-container');
        container.innerHTML = '';
-       
+
+       // Honest empty state — never show fabricated worker data
+       if (appState.workers.length === 0) {
+           container.innerHTML = `
+               <div class="empty-state">
+                   <i data-lucide="radar"></i>
+                   <strong>No workers connected yet</strong>
+                   <span>Waiting for live belt data from the backend&hellip;</span>
+               </div>
+           `;
+           lucide.createIcons();
+           return;
+       }
+
        let sumTemp = 0, sumGas = 0, sumWater = 0;
    
        appState.workers.forEach(worker => {
@@ -1204,7 +1178,28 @@ body.innerHTML = `
    function renderWorkersPage() {
        const tbody = document.getElementById('workers-table-body');
        tbody.innerHTML = '';
-       
+
+       // Honest empty state — never show fabricated worker rows
+       if (appState.workers.length === 0) {
+           tbody.innerHTML = `
+               <tr>
+                   <td colspan="8">
+                       <div class="empty-state">
+                           <i data-lucide="radar"></i>
+                           <strong>No workers connected yet</strong>
+                           <span>Worker telemetry will appear here once belts check in.</span>
+                       </div>
+                   </td>
+               </tr>
+           `;
+           document.getElementById('workers-total-count').innerText = '00';
+           document.getElementById('workers-safe-count').innerText = '00';
+           document.getElementById('workers-obs-count').innerText = '00';
+           document.getElementById('workers-high-count').innerText = '00';
+           lucide.createIcons();
+           return;
+       }
+
        let safeCount = 0, obsCount = 0;
    
        appState.workers.forEach(worker => {
@@ -1260,7 +1255,20 @@ body.innerHTML = `
        
        dashContainer.innerHTML = ''; pageContainer.innerHTML = '';
        let activeCount = 0, critCount = 0, warnCount = 0;
-   
+
+       // Honest empty state — no fabricated alerts
+       if (appState.alerts.length === 0) {
+           const emptyHtml = `
+               <div class="empty-state">
+                   <i data-lucide="bell-off"></i>
+                   <strong>No alerts</strong>
+                   <span>All clear. Alerts from connected belts will appear here.</span>
+               </div>
+           `;
+           dashContainer.innerHTML = emptyHtml;
+           pageContainer.innerHTML = emptyHtml;
+       }
+
        // Part 4: count active SOS alerts for the emergency strip
        const activeSOSCount = appState.alerts.filter(a => !a.ack && a.isSOS).length;
        const anySOSActive = activeSOSCount > 0 || appState.workers.some(w => w.sensorData?.sos === true);
@@ -1511,6 +1519,9 @@ appState.charts.temp = createChart(
 
     renderAlerts();
     renderActivityLog();
+
+    // Part 1: put the AI panel in its honest waiting state until real data arrives
+    resetAIPanel();
 
     // Part 3: first Emergency Mode check after initial data load
     emergencyRefresh();
