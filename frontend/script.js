@@ -170,6 +170,54 @@ async function loadWorkersFromBackend() {
         console.error("❌ Worker data loading failed:", error);
     }
 }
+async function loadRiskFromBackend() {
+    try {
+        const { data: { session } } = await supabaseClient.auth.getSession();
+
+        if (!session) {
+            console.log("❌ No Supabase session found");
+            return;
+        }
+
+        const headers = {
+            Authorization: `Bearer ${session.access_token}`
+        };
+
+        for (const worker of appState.workers) {
+            const deviceId = worker.sensorData?.device_id;
+
+            if (!deviceId) continue;
+
+            const response = await fetch(
+                `${API_BASE_URL}/risk/${deviceId}`,
+                { headers }
+            );
+
+            const result = await response.json();
+
+            if (!result.success || !result.data?.length) {
+                continue;
+            }
+
+            const latestRisk = result.data[result.data.length - 1];
+
+            worker.aiRisk = {
+                score: Number(latestRisk.risk_score),
+                level: latestRisk.risk_level,
+                reason: latestRisk.reason,
+                createdAt: latestRisk.created_at
+            };
+        }
+
+        renderDashboard();
+        renderWorkersPage();
+
+        console.log("✅ AI risk data loaded from backend");
+
+    } catch (error) {
+        console.error("❌ AI risk loading failed:", error);
+    }
+}
 let backendRefreshTimer = null;
 
 function startBackendRefresh() {
@@ -185,27 +233,145 @@ function startBackendRefresh() {
 }
 async function loadRiskHistory() {
     try {
-        const { data: sessionData } = await supabaseClient.auth.getSession();
-        const token = sessionData?.session?.access_token;
+        const {
+            data: { session }
+        } = await supabaseClient.auth.getSession();
 
-        if (!token) return;
-
-        const response = await fetch(`${API_BASE_URL}/risk/RF-001`, {
-            headers: {
-                'Authorization': `Bearer ${token}`
-            }
-        });
-
-        if (!response.ok) {
-            throw new Error(`Risk API error: ${response.status}`);
+        if (!session) {
+            console.log("❌ No Supabase session found");
+            return;
         }
 
-        const result = await response.json();
-        appState.riskHistory = result.data || [];
+        const headers = {
+            Authorization: `Bearer ${session.access_token}`
+        };
 
-        console.log(`Loaded ${appState.riskHistory.length} risk predictions`);
+        let allRiskData = [];
+
+        // Load AI risk for every connected worker/device
+        for (const worker of appState.workers) {
+
+            const deviceId = worker.sensorData?.device_id;
+
+            if (!deviceId) continue;
+
+            const response = await fetch(
+                `${API_BASE_URL}/risk/${deviceId}`,
+                { headers }
+            );
+
+            const result = await response.json();
+
+            if (!result.success || !result.data?.length) {
+                continue;
+            }
+
+            // Keep historical AI risk data for analytics
+            allRiskData.push(...result.data);
+
+            // Latest AI prediction
+            const latestRisk =
+                result.data[result.data.length - 1];
+
+            worker.aiRisk = {
+                score: Number(latestRisk.risk_score),
+                level: latestRisk.risk_level,
+                reason: latestRisk.reason,
+                createdAt: latestRisk.created_at
+            };
+        }
+
+        appState.riskHistory = allRiskData;
+
+        // ---------------------------------------------------------
+        // Calculate overall AI risk from latest worker predictions
+        // ---------------------------------------------------------
+
+        const workersWithRisk = appState.workers.filter(
+            worker => worker.aiRisk
+        );
+
+        if (workersWithRisk.length > 0) {
+
+            const averageRisk =
+                workersWithRisk.reduce(
+                    (sum, worker) => sum + worker.aiRisk.score,
+                    0
+                ) / workersWithRisk.length;
+
+            let overallLevel = "LOW";
+
+            if (averageRisk >= 75) {
+                overallLevel = "CRITICAL";
+            } else if (averageRisk >= 50) {
+                overallLevel = "HIGH";
+            } else if (averageRisk >= 25) {
+                overallLevel = "MEDIUM";
+            }
+
+            // Update Overall Risk card
+            const overallRiskLevel =
+                document.getElementById("overall-risk-level");
+
+            const overallRiskScore =
+                document.getElementById("overall-risk-score");
+
+            if (overallRiskLevel) {
+                overallRiskLevel.innerText = overallLevel;
+            }
+
+            if (overallRiskScore) {
+                overallRiskScore.innerText =
+                    `${Math.round(averageRisk)} / 100 Score`;
+            }
+
+            // Update AI Risk Score section
+            const aiRiskScore =
+                document.getElementById("ai-risk-score");
+
+            const aiPredictedRisk =
+                document.getElementById("ai-predicted-risk");
+
+            const aiRecommendation =
+                document.getElementById("ai-recommendation");
+
+            if (aiRiskScore) {
+                aiRiskScore.innerText =
+                    `${Math.round(averageRisk)} / 100`;
+            }
+
+            if (aiPredictedRisk) {
+                aiPredictedRisk.innerText =
+                    overallLevel;
+            }
+
+            // Use the latest AI reason as the recommendation
+            const latestWorker =
+                workersWithRisk[workersWithRisk.length - 1];
+
+            if (
+                aiRecommendation &&
+                latestWorker.aiRisk?.reason
+            ) {
+                aiRecommendation.innerHTML = `
+                    <strong>AI Recommendation:</strong><br>
+                    ${latestWorker.aiRisk.reason}
+                `;
+            }
+        }
+
+        renderDashboard();
+        renderWorkersPage();
+
+        console.log(
+            `✅ AI risk data loaded: ${allRiskData.length} records`
+        );
+
     } catch (error) {
-        console.error('❌ Risk history loading failed:', error);
+        console.error(
+            "❌ AI risk loading failed:",
+            error
+        );
     }
 }
    const appState = {
@@ -343,9 +509,9 @@ async function loadRiskHistory() {
             errEl.classList.add('hidden');
         }
 
-        await loadRiskHistory();
         await loadAlertsFromBackend();
         await loadWorkersFromBackend();
+        await loadRiskHistory();
         startBackendRefresh();
         updateOperatorDisplay();
 
@@ -639,7 +805,17 @@ body.innerHTML = `
        let sumTemp = 0, sumGas = 0, sumWater = 0;
    
        appState.workers.forEach(worker => {
-           const { status, risk } = evaluateStatus(worker);
+        const { status, risk } = evaluateStatus(worker);
+
+        const aiRiskScore = worker.aiRisk?.score ?? risk;
+        const aiRiskLevel = worker.aiRisk?.level || status;
+        
+        const aiRiskColor =
+            aiRiskLevel === 'CRITICAL' || aiRiskLevel === 'HIGH'
+                ? 'text-critical'
+                : aiRiskLevel === 'MEDIUM'
+                    ? 'text-warning'
+                    : 'text-safe';
            const d = worker.sensorData;
            
            sumTemp += d.temperature_c; sumGas += d.gas_raw; sumWater += d.water_level_cm;
@@ -670,8 +846,7 @@ body.innerHTML = `
                        <span class="metric-value">${isMotion} / ${worker.battery}%</span>
                    </div>
                    <div class="metric">
-                       <span class="metric-label">Risk Score</span>
-                       <span class="metric-value ${getStatusColor(status)}">${risk} / 100</span>
+                     <span class="metric-value ${aiRiskColor}">${Math.round(aiRiskScore)} / 100</span>
                    </div>
                </div>
            `;
@@ -691,8 +866,19 @@ body.innerHTML = `
        let safeCount = 0, obsCount = 0;
    
        appState.workers.forEach(worker => {
-           const { status, risk } = evaluateStatus(worker);
-           const d = worker.sensorData;
+        const { status, risk } = evaluateStatus(worker);
+    
+        const aiRiskScore = worker.aiRisk?.score ?? risk;
+        const aiRiskLevel = worker.aiRisk?.level || status;
+    
+        const aiRiskColor =
+            aiRiskLevel === 'CRITICAL' || aiRiskLevel === 'HIGH'
+                ? 'text-critical'
+                : aiRiskLevel === 'MEDIUM'
+                    ? 'text-warning'
+                    : 'text-safe';
+    
+        const d = worker.sensorData;
            
            if(status === 'SAFE') safeCount++; else obsCount++;
    
@@ -706,7 +892,7 @@ body.innerHTML = `
                <td class="data-font">${Math.round(d.gas_raw)}</td>
                <td class="data-font">${d.water_level_cm.toFixed(1)}</td>
                <td class="data-font">${worker.battery}%</td>
-               <td class="data-font ${getStatusColor(status)}">${risk}</td>
+               <td class="data-font ${aiRiskColor}">${Math.round(aiRiskScore)}</td>
            `;
            tbody.appendChild(tr);
        });
