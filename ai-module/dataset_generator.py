@@ -19,6 +19,58 @@ import pandas as pd
 import json
 import os
 
+# ─── Rule Engine Port (label consistency) ────────────────────
+
+def rule_label(row):
+    """
+    Python port of the deployed risk-module/riskEngine.js scoring, used to
+    label training data. Phase 3 requirement: ML training labels must match
+    deployment behavior, otherwise the anomaly detector 'learns' a different
+    definition of normal than the one the rules enforce.
+
+    Thresholds mirror riskEngine.js: temp 38/45/55, gas 400/600/800,
+    water 15/25/40, SOS +40, HIGH hazard ⇒ ≥MEDIUM, CRITICAL hazard ⇒ ≥HIGH.
+    """
+    temp = row["temperature_c"]
+    gas = row["gas_raw"]
+    water = row["water_level_cm"]
+    ax, ay, az = row["acceleration_x_ms2"], row["acceleration_y_ms2"], row["acceleration_z_ms2"]
+    sos = bool(row.get("sos", False))
+
+    score = 0
+    critical = high = False
+
+    if temp >= 55: score += 35; critical = True
+    elif temp >= 45: score += 25; high = True
+    elif temp >= 38: score += 10
+
+    if gas >= 800: score += 35; critical = True
+    elif gas >= 600: score += 25; high = True
+    elif gas >= 400: score += 10
+
+    if water >= 40: score += 30; critical = True
+    elif water >= 25: score += 20; high = True
+    elif water >= 15: score += 10
+
+    if sos: score += 40; critical = True
+
+    # Fall logic: impact+free-fall is confirmed fall; impact alone or lying alone
+    # contributes partial score (simplified — the JS engine uses session state)
+    total_a = (ax**2 + ay**2 + az**2) ** 0.5
+    if total_a > 25:  # impact-range magnitude
+        score += 50
+        critical = True
+    elif total_a < 2.0 or (4 < az < 7 and total_a > 6):  # free-fall or lying orientation
+        score += 40
+
+    score = min(score, 100)
+    if score >= 80: return "CRITICAL"
+    if score >= 55: return "HIGH"
+    if score >= 30: return "MEDIUM"
+    if critical: return "HIGH"  # any critical sensor floors at HIGH
+    if high: return "MEDIUM"    # any high hazard floors at MEDIUM (Phase 3)
+    return "LOW"
+
 # ─── Normal Data Generator ───────────────────────────────────
 
 def generate_normal(count=500):
@@ -279,6 +331,10 @@ def build_dataset(readings_per_scenario=500):
     for col in ["temperature_c", "gas_raw", "water_level_cm",
                 "acceleration_x_ms2", "acceleration_y_ms2", "acceleration_z_ms2"]:
         df[col] = df[col].round(2)
+
+    # Phase 3: relabel with the rule-engine port so training labels match
+    # exactly what the deployed rules produce for the same readings.
+    df["risk_level"] = df.apply(rule_label, axis=1)
 
     return df
 

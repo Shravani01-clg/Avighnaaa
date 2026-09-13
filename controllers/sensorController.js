@@ -9,8 +9,10 @@ const ALERT_SEVERITY = {
   FLOOD_DANGER: "HIGH",
   TEMP_DANGER: "HIGH",
   FALL_DETECTED: "CRITICAL",
+  POSSIBLE_FALL: "HIGH", // fall signature forming — not yet confirmed
   SOS: "CRITICAL",
   COMBINED_DANGER: "CRITICAL",
+  ANOMALY: "MEDIUM",     // ML anomaly detector flagged the reading
   HIGH_RISK: "HIGH",  // legacy, kept for backwards compat
 };
 
@@ -19,8 +21,10 @@ const ALERT_MESSAGES = {
   FLOOD_DANGER: "Flooding / high water level detected",
   TEMP_DANGER: "Abnormal temperature detected",
   FALL_DETECTED: "Worker fall detected — immediate assistance required",
+  POSSIBLE_FALL: "Possible fall detected — worker may need help",
   SOS: "Emergency SOS activated by worker",
   COMBINED_DANGER: "Multiple simultaneous hazards detected — CRITICAL situation",
+  ANOMALY: "AI detected an anomalous sensor pattern",
   HIGH_RISK: "High risk level detected",
 };
 
@@ -131,9 +135,14 @@ const receiveSensorData = async (req, res) => {
     const aiResult = await getAIAnalysis(req.body, ruleBasedRisk);
 
     // Final risk: AI never downgrades, only upgrades
+    // Phase 3 contract: risk_level, risk_score, anomaly_detected, reason are ALWAYS present
     const risk = {
       risk_score: aiResult.finalRiskScore || ruleBasedRisk.risk_score,
       risk_level: aiResult.finalRiskLevel || ruleBasedRisk.risk_level,
+      anomaly_detected:
+        ruleBasedRisk.anomaly_detected ||
+        (aiResult.aiAnalysis ? aiResult.aiAnalysis.anomalyDetected === true : false),
+      fall_state: ruleBasedRisk.fall_state || "NORMAL",
       reason: ruleBasedRisk.reason,
       details: ruleBasedRisk.details,
       alerts: [...ruleBasedRisk.alerts, ...(aiResult.aiAlerts || [])],
@@ -152,14 +161,20 @@ const receiveSensorData = async (req, res) => {
       sos: sos ?? false,
       recorded_at: timestamp || new Date().toISOString()
     });
+    const record = Array.isArray(data) ? data[0] : data;
 
     // ── Store risk prediction ──
     const riskData = await store.insert("risk_predictions", {
       device_id,
       risk_score: risk.risk_score,
       risk_level: risk.risk_level,
-      reason: risk.reason
+      reason: risk.reason,
+      anomaly_detected: risk.anomaly_detected,
+      fall_state: risk.fall_state
     });
+
+    // store.insert returns an array of inserted rows — unwrap for the API contract
+    const riskRecord = Array.isArray(riskData) ? riskData[0] : riskData;
 
     // ── Create alerts based on enhanced risk engine output ──
     // The risk engine returns an array of alert types that should be created.
@@ -171,8 +186,13 @@ const receiveSensorData = async (req, res) => {
     res.status(201).json({
       success: true,
       message: "Sensor data, risk prediction and alerts processed successfully",
-      data,
-      risk: riskData,
+      data: record,
+      risk: {
+        ...riskRecord,
+        // Phase 3 output contract — predictable fields for the frontend
+        anomaly_detected: risk.anomaly_detected,
+        fall_state: risk.fall_state,
+      },
       riskDetails: risk.details,
       alertsCreated: risk.alerts,
       ai: risk.ai,

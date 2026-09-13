@@ -16,6 +16,10 @@ import sys
 import os
 import argparse
 
+# Windows consoles default to cp1252 — force UTF-8 so status output never crashes
+if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # Add parent dir to path for imports
 sys.path.insert(0, os.path.dirname(__file__))
 

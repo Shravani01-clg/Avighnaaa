@@ -66,7 +66,8 @@ const tests = [
       acceleration_z_ms2: 9.8,
       sos: false,
     },
-    expected: { risk_level: "LOW" },
+    // Phase 3: HIGH-level hazards now floor at MEDIUM (safety floor)
+    expected: { risk_level: "MEDIUM" },
   },
   {
     name: "SOS activated",

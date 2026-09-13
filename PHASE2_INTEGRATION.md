@@ -40,6 +40,8 @@ The risk module returns this:
 {
   "risk_score": 91,
   "risk_level": "CRITICAL",
+  "anomaly_detected": false,
+  "fall_state": "NORMAL",
   "reason": "High temperature; High gas level; High water level; Combined danger (3 simultaneous hazards)"
 }
 ```
@@ -48,6 +50,8 @@ The risk module returns this:
 |-------|------|--------|-------------|
 | `risk_score` | number | 0-100 | Risk intensity |
 | `risk_level` | string | LOW / MEDIUM / HIGH / CRITICAL | Risk classification |
+| `anomaly_detected` | boolean | true/false | Rules or ML flagged the reading as anomalous |
+| `fall_state` | string | NORMAL / SUDDEN_MOVEMENT / POSSIBLE_FALL / FALL_CONFIRMED | MPU6050 fall progression |
 | `reason` | string | — | Human-readable explanation |
 
 ### Risk Level Thresholds

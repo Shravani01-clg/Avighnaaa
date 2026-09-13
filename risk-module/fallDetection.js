@@ -31,6 +31,19 @@ const THRESHOLDS = {
   fallScoreThreshold: 70,  // 0-100 score needed to declare a fall
 };
 
+// ─── Fall State Progression ──────────────────────────────────
+// Spec (Phase 3): Normal movement → Sudden movement → Possible fall → Fall confirmed
+
+const FALL_STATES = {
+  NORMAL: "NORMAL",                 // Normal movement
+  SUDDEN_MOVEMENT: "SUDDEN_MOVEMENT", // Jerk/spike detected — watching closely
+  POSSIBLE_FALL: "POSSIBLE_FALL",   // Fall signature forming — alert supervisors
+  FALL_CONFIRMED: "FALL_CONFIRMED", // Fall algorithm confirmed — emergency
+};
+
+// Score at which a fall is considered "possible" (not yet confirmed)
+const POSSIBLE_FALL_SCORE = 40;
+
 // ─── State ───────────────────────────────────────────────────
 
 const state = {
@@ -38,6 +51,7 @@ const state = {
   historyMax: 20,
   freeFallStart: null,
   freeFallCount: 0,
+  lastFreeFallIndex: null,   // index of last confirmed free-fall reading
   lastImpactIndex: null,
   standingZ: 9.8,
   isLyingDown: false,
@@ -71,7 +85,9 @@ function pushHistory(value) {
 function detectFall(accelX, accelY, accelZ) {
   if (state.cooldown > 0) {
     state.cooldown--;
-    return { fallDetected: false, fallScore: 0, phase: "cooldown", details: "Cooldown active" };
+    // Right after a confirmed fall the worker is usually still on the ground
+    const fallState = state.isLyingDown ? FALL_STATES.FALL_CONFIRMED : FALL_STATES.NORMAL;
+    return { fallDetected: false, fallScore: 0, phase: "cooldown", fallState, details: "Cooldown active" };
   }
 
   const total = totalAccel(accelX, accelY, accelZ);
@@ -86,6 +102,7 @@ function detectFall(accelX, accelY, accelZ) {
 
   if (isFreeFall) {
     state.freeFallCount++;
+    state.lastFreeFallIndex = state.history.length - 1;
     phases.push("free-fall");
 
     if (state.freeFallCount >= THRESHOLDS.freeFallMinDuration) {
@@ -93,9 +110,6 @@ function detectFall(accelX, accelY, accelZ) {
       details.push(`Free-fall detected (${state.freeFallCount} readings, ${total.toFixed(1)} m/s²)`);
     }
   } else {
-    if (state.freeFallCount >= THRESHOLDS.freeFallMinDuration) {
-      state.lastImpactIndex = state.history.length - 1;
-    }
     state.freeFallCount = 0;
   }
 
@@ -109,9 +123,11 @@ function detectFall(accelX, accelY, accelZ) {
     state.lastImpactIndex = state.history.length - 1;
   }
 
-  if (state.lastImpactIndex !== null && !isFreeFall) {
-    const gap = state.history.length - 1 - state.lastImpactIndex;
-    if (gap <= THRESHOLDS.impactWindow && !isImpact) {
+  // Free-fall followed by impact (within the window) is THE fall signature —
+  // award the window bonus even on the impact reading itself.
+  if (state.lastFreeFallIndex !== null && !isFreeFall) {
+    const gap = state.history.length - 1 - state.lastFreeFallIndex;
+    if (gap <= THRESHOLDS.impactWindow) {
       fallScore += 15;
       details.push("Impact within free-fall window");
     }
@@ -133,6 +149,11 @@ function detectFall(accelX, accelY, accelZ) {
     state.standingZ = state.standingZ * 0.99 + accelZ * 0.01;
   }
 
+  // Clear the confirmed flag once the worker is back upright
+  if (state.fallConfirmed && state.cooldown === 0 && !state.isLyingDown) {
+    state.fallConfirmed = false;
+  }
+
   fallScore = Math.min(fallScore, 100);
 
   let phase = "normal";
@@ -149,9 +170,20 @@ function detectFall(accelX, accelY, accelZ) {
     details.push(`FALL CONFIRMED (score: ${fallScore})`);
   }
 
+  // Map composite score + session state to the 4-state progression
+  let fallState = FALL_STATES.NORMAL;
+  if (fallDetected || (state.fallConfirmed && state.isLyingDown)) {
+    fallState = FALL_STATES.FALL_CONFIRMED;
+  } else if (fallScore >= POSSIBLE_FALL_SCORE) {
+    fallState = FALL_STATES.POSSIBLE_FALL;
+  } else if (fallScore > 0) {
+    fallState = FALL_STATES.SUDDEN_MOVEMENT;
+  }
+
   return {
     fallDetected,
     fallScore,
+    fallState,
     phase,
     details: details.join(" | ") || "Normal acceleration",
     totalAccel: Math.round(total * 100) / 100,
@@ -162,6 +194,7 @@ function resetState() {
   state.history = [];
   state.freeFallStart = null;
   state.freeFallCount = 0;
+  state.lastFreeFallIndex = null;
   state.lastImpactIndex = null;
   state.standingZ = 9.8;
   state.isLyingDown = false;
@@ -169,4 +202,4 @@ function resetState() {
   state.cooldown = 0;
 }
 
-module.exports = { detectFall, resetState, THRESHOLDS };
+module.exports = { detectFall, resetState, THRESHOLDS, FALL_STATES };

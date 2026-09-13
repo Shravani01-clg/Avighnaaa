@@ -123,7 +123,12 @@ class RiskPredictor:
 
         X_scaled = self.scaler.transform(X)
 
-        prediction = self.model.predict(X_scaled)[0]
+        # CRITICAL: decode the label back to its string form (LOW/MEDIUM/...).
+        # The model predicts encoded integers; without inverse_transform the
+        # API would return np.int64(0) instead of "LOW" — a contract break
+        # caught by Phase 3 validation.
+        prediction = self.label_encoder.inverse_transform(self.model.predict(X_scaled))[0]
+        prediction = str(prediction)
         probabilities = self.model.predict_proba(X_scaled)[0]
 
         # Build probability dict

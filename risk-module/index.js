@@ -16,15 +16,17 @@
  *   "sos": boolean
  * }
  *
- * OUTPUT FORMAT:
+ * OUTPUT FORMAT (Phase 3 contract — always present):
  * {
  *   "risk_score": number (0-100),
  *   "risk_level": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL",
+ *   "anomaly_detected": boolean,
+ *   "fall_state": "NORMAL" | "SUDDEN_MOVEMENT" | "POSSIBLE_FALL" | "FALL_CONFIRMED",
  *   "reason": "string"
  * }
  */
 
-const { calculateRisk, resetState, THRESHOLDS } = require("./riskEngine");
+const { calculateRisk, resetState, THRESHOLDS, detectAnomaly } = require("./riskEngine");
 
 /**
  * Analyze sensor data and return risk assessment.
@@ -33,11 +35,15 @@ const { calculateRisk, resetState, THRESHOLDS } = require("./riskEngine");
  * @returns {{ risk_score: number, risk_level: string, reason: string }}
  */
 function analyzeRisk(sensorData) {
-  // Validate input
+  // Validate input — contract fields are ALWAYS present, even on bad input
   if (!sensorData || typeof sensorData !== "object") {
     return {
       risk_score: 0,
       risk_level: "LOW",
+      anomaly_detected: false,
+      anomaly_score: 0,
+      fall_state: "NORMAL",
+      fall_score: 0,
       reason: "Invalid input: sensor data required",
     };
   }
@@ -58,4 +64,5 @@ module.exports = {
   THRESHOLDS,
   // Re-export for advanced usage
   calculateRisk,
+  detectAnomaly,
 };

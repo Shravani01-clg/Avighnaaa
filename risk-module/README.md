@@ -29,15 +29,24 @@ Sensor Data (JSON)
 }
 ```
 
-## Output Format
+## Output Format (Phase 3 contract — fields always present)
 
 ```json
 {
   "risk_score": 0,
   "risk_level": "LOW",
+  "anomaly_detected": false,
+  "anomaly_score": 0,
+  "fall_state": "NORMAL",
+  "fall_score": 0,
   "reason": "No major risk detected"
 }
 ```
+
+- `anomaly_detected` — rule-based anomaly check (implausible readings / sensor faults)
+- `fall_state` — `NORMAL` → `SUDDEN_MOVEMENT` → `POSSIBLE_FALL` → `FALL_CONFIRMED`
+
+See `AI_DOCUMENTATION.md` in the repo root for the full spec.
 
 ### Risk Levels
 
@@ -105,15 +114,17 @@ node -e "const { analyzeRisk } = require('./risk-module'); console.log(JSON.stri
 | File | Purpose |
 |------|---------|
 | `index.js` | Main entry point — `analyzeRisk(sensorData)` |
-| `riskEngine.js` | Enhanced risk calculation logic |
-| `fallDetection.js` | Accelerometer-based fall detection |
-| `test.js` | Independent test script |
+| `riskEngine.js` | Risk calculation + rule-based anomaly detection |
+| `fallDetection.js` | Accelerometer fall detection with 4-state progression |
+| `test.js` | Legacy test script |
+| `validate.js` | Phase 3 validation gate (run this) |
 | `README.md` | This file |
 
 ## Testing
 
 ```bash
-node risk-module/test.js
+node risk-module/validate.js   # Phase 3 gate — scenarios, contract, fall states, anomaly FP
+node risk-module/test.js       # legacy suite
 ```
 
 Expected output:

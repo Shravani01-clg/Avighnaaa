@@ -17,6 +17,12 @@ Usage:
 """
 
 import argparse
+import sys
+
+# Windows consoles default to cp1252 — force UTF-8 so startup output never crashes
+if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 from flask import Flask, request, jsonify
 
 from anomaly_detector import AnomalyDetector, detector
@@ -111,7 +117,7 @@ def predict_all():
     risk_result = predictor.predict(data)
     anomaly_result = detector.predict(data)
 
-    # Combined analysis
+    # Combined analysis (spec contract: anomaly_detected must always be present)
     combined_risk_score = risk_result.get("risk_score", 15)
     if anomaly_result["is_anomaly"]:
         # If anomalous, boost the risk score
@@ -139,6 +145,7 @@ def predict_all():
         "combined": {
             "risk_score": final_score,
             "risk_level": final_level,
+            "anomaly_detected": bool(anomaly_result["is_anomaly"]),
             "message": f"AI analysis complete. Risk: {final_level}, Anomaly: {'Yes' if anomaly_result['is_anomaly'] else 'No'}",
         },
     })
