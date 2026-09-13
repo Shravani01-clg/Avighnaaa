@@ -255,13 +255,6 @@ window.emergencyOpen = function () {
     emergencyRefresh();
 };
 
-const SUPABASE_URL = "https://qsymativfurrwguffwvc.supabase.co";
-const SUPABASE_KEY = "sb_publishable_NBqLNkIQT-nxb7rfvJFJ0Q_Pyu6wsCg";
-
-const supabaseClient = supabase.createClient(
-    SUPABASE_URL,
-    SUPABASE_KEY
-);
 async function getWorkersFromBackend() {
     const { data: { session } } = await supabaseClient.auth.getSession();
 
