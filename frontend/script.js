@@ -45,14 +45,6 @@ function tierOutlineClass(level) {
     }
 }
 
-function severityTier(severity) {
-    const s = (severity || '').toUpperCase();
-    if (s === 'CRITICAL') return 'critical';
-    if (s === 'HIGH' || s === 'WARNING') return 'warning';
-    if (s === 'MEDIUM' || s === 'INFO') return 'info';
-    return 'info';
-}
-
 function typeChipClass(alertType) {
     const t = (alertType || '').toUpperCase();
     if (t === 'SOS') return 'chip-sos';
@@ -255,25 +247,6 @@ window.emergencyOpen = function () {
     emergencyRefresh();
 };
 
-async function getWorkersFromBackend() {
-    const { data: { session } } = await supabaseClient.auth.getSession();
-
-    if (!session) {
-        console.log("❌ No Supabase session found");
-        return;
-    }
-
-    const response = await fetch(`${API_BASE_URL}/workers`, {
-        headers: {
-            Authorization: `Bearer ${session.access_token}`
-        }
-    });
-
-    const result = await response.json();
-
-    console.log("👷 Backend workers:", result);
-}
-
 async function testBackendConnection() {
     try {
         const response = await fetch("http://localhost:5002/");
@@ -338,6 +311,48 @@ async function loadAlertsFromBackend() {
 
     } catch (error) {
         console.error('❌ Alerts loading failed:', error);
+    }
+}
+
+// Resolve an alert via the backend. Only real backend alerts (numeric id) are
+// sent to PATCH /api/alerts/:alertId/resolve — synthetic client-only alerts
+// (e.g. the SOS fallback) are acknowledged locally without an API call.
+async function resolveAlertOnBackend(alert) {
+    if (!alert || alert.ack) return true; // nothing to do
+
+    // Synthetic alerts have no backend row — acknowledge locally only.
+    if (alert.synthetic || typeof alert.id !== 'number') {
+        alert.ack = true;
+        return true;
+    }
+
+    try {
+        const { data: sessionData } = await supabaseClient.auth.getSession();
+        const token = sessionData?.session?.access_token;
+
+        if (!token) {
+            console.error('❌ Cannot resolve alert: no auth token');
+            return false;
+        }
+
+        const response = await fetch(`${API_BASE_URL}/alerts/${alert.id}/resolve`, {
+            method: 'PATCH',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Resolve API error: ${response.status}`);
+        }
+
+        alert.ack = true;
+        return true;
+
+    } catch (error) {
+        // Leave alert.ack unchanged so the next poll can retry
+        console.error(`❌ Failed to resolve alert ${alert.id}:`, error);
+        return false;
     }
 }
 async function loadWorkersFromBackend() {
@@ -406,16 +421,28 @@ async function loadWorkersFromBackend() {
             worker.sensorData = latestSensor;
             worker.sensorHistory = sensorResult.data;
             if (latestSensor.sos === true) {
-                appState.alerts.unshift({
-                    id: `SOS-${worker.worker_id}-${Date.now()}`,
-                    type: "CRITICAL",
-                    msg: "SOS button pressed. Immediate assistance required.",
-                    aiAction: "Contact the worker immediately and dispatch emergency assistance to the reported location.",
-                    worker: worker.name || worker.worker_id,
-                    belt: device.device_id,
-                    time: "Just now",
-                    ack: false
-                });
+                // Fallback-only synthetic SOS alert: at most ONE per device, and only
+                // when the backend has no real unresolved SOS alert for that device.
+                const hasRealSOSAlert = appState.alerts.some(
+                    a => a.isSOS && a.belt === device.device_id && !a.ack
+                );
+                const hasSyntheticSOSAlert = appState.alerts.some(
+                    a => a.synthetic && a.belt === device.device_id && !a.ack
+                );
+
+                if (!hasRealSOSAlert && !hasSyntheticSOSAlert) {
+                    appState.alerts.unshift({
+                        id: `SOS-${worker.worker_id}-${device.device_id}`,
+                        synthetic: true,
+                        type: "CRITICAL",
+                        msg: "SOS button pressed. Immediate assistance required.",
+                        aiAction: "Contact the worker immediately and dispatch emergency assistance to the reported location.",
+                        worker: worker.name || worker.worker_id,
+                        belt: device.device_id,
+                        time: "Just now",
+                        ack: false
+                    });
+                }
             }
         }
 
@@ -434,54 +461,6 @@ async function loadWorkersFromBackend() {
         console.error("❌ Worker data loading failed:", error);
     }
 }
-async function loadRiskFromBackend() {
-    try {
-        const { data: { session } } = await supabaseClient.auth.getSession();
-
-        if (!session) {
-            console.log("❌ No Supabase session found");
-            return;
-        }
-
-        const headers = {
-            Authorization: `Bearer ${session.access_token}`
-        };
-
-        for (const worker of appState.workers) {
-            const deviceId = worker.sensorData?.device_id;
-
-            if (!deviceId) continue;
-
-            const response = await fetch(
-                `${API_BASE_URL}/risk/${deviceId}`,
-                { headers }
-            );
-
-            const result = await response.json();
-
-            if (!result.success || !result.data?.length) {
-                continue;
-            }
-
-            const latestRisk = result.data[result.data.length - 1];
-
-            worker.aiRisk = {
-                score: Number(latestRisk.risk_score),
-                level: latestRisk.risk_level,
-                reason: latestRisk.reason,
-                createdAt: latestRisk.created_at
-            };
-        }
-
-        renderDashboard();
-        renderWorkersPage();
-
-        console.log("✅ AI risk data loaded from backend");
-
-    } catch (error) {
-        console.error("❌ AI risk loading failed:", error);
-    }
-}
 let backendRefreshTimer = null;
 
 function startBackendRefresh() {
@@ -493,6 +472,8 @@ function startBackendRefresh() {
         await loadRiskHistory();
         await loadAlertsFromBackend();
         await loadWorkersFromBackend();
+        // Refresh analytics charts in place with the latest real data
+        refreshCharts();
         // Part 3: keep Emergency Mode in sync with the latest sensor data
         emergencyRefresh();
     }, appState.settings.refreshInterval * 1000);
@@ -822,47 +803,51 @@ async function loadRiskHistory() {
 
    window.signOut = signOut;
 
+   // SPA page switching (used by nav clicks AND in-page buttons like "View All")
+   window.switchPage = function(targetPage) {
+       document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+       const navLink = document.querySelector(`.nav-item[data-target="${targetPage}"]`);
+       if (navLink) navLink.classList.add('active');
+
+       document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
+       const pageEl = document.getElementById(`page-${targetPage}`);
+       if (pageEl) pageEl.classList.add('active');
+
+       const titleMap = {
+           'dashboard': 'Dashboard',
+           'workers': 'Worker Safety Management',
+           'alerts': 'System Alerts & AI Intelligence',
+           'analytics': 'Sensor Analytics',
+           'settings': 'System Settings'
+       };
+       document.getElementById('page-title').innerText = titleMap[targetPage] || targetPage;
+
+       // Guard: require authentication to view any dashboard page
+       if (!appState.auth.authenticated) {
+           document.getElementById('login-overlay').classList.remove('hidden');
+           document.getElementById('page-title').innerText = 'Control Room Access';
+           return;
+       }
+
+       // Force Chart.js to recalculate dimensions since their container just went from display:none to block
+       if (targetPage === 'analytics') {
+           if (!appState.charts.temp) {
+               initCharts();
+           }
+           requestAnimationFrame(() => {
+               Object.values(appState.charts).forEach(chart => {
+                   chart.resize();
+                   chart.update();
+               });
+           });
+       }
+   };
+
    // --- Single Page App Navigation ---
    document.querySelectorAll('.nav-item').forEach(link => {
        link.addEventListener('click', (e) => {
            e.preventDefault();
-           
-           document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-           e.currentTarget.classList.add('active');
-   
-           const targetPage = e.currentTarget.getAttribute('data-target');
-           document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
-           document.getElementById(`page-${targetPage}`).classList.add('active');
-   
-           const titleMap = {
-               'dashboard': 'Dashboard',
-               'workers': 'Worker Safety Management',
-               'alerts': 'System Alerts & AI Intelligence',
-               'analytics': 'Sensor Analytics',
-               'settings': 'System Settings'
-           };
-           document.getElementById('page-title').innerText = titleMap[targetPage];
-   
-           // Guard: require authentication to view any dashboard page
-           if (!appState.auth.authenticated) {
-               document.getElementById('login-overlay').classList.remove('hidden');
-               document.getElementById('page-title').innerText = 'Control Room Access';
-               return;
-           }
-   
-           // Force Chart.js to recalculate dimensions since their container just went from display:none to block
-           if (targetPage === 'analytics') {
-            if (!appState.charts.temp) {
-                initCharts();
-            }
-        
-            requestAnimationFrame(() => {
-                Object.values(appState.charts).forEach(chart => {
-                    chart.resize();
-                    chart.update();
-                });
-            });
-        }
+           window.switchPage(e.currentTarget.getAttribute('data-target'));
        });
    });
    
@@ -1354,21 +1339,21 @@ body.innerHTML = `
        lucide.createIcons();
    }
    
-   window.ackAlert = function(id) {
+   window.ackAlert = async function(id) {
        const alert = appState.alerts.find(a => a.id === id);
-       if(alert) {
-           const wasAcked = alert.ack;
-           alert.ack = true;
-           if (!wasAcked) logAlertAsEvent(alert);
+       if(alert && !alert.ack) {
+           logAlertAsEvent(alert);
+           // Resolve via backend (real alerts) or locally (synthetic SOS alerts)
+           await resolveAlertOnBackend(alert);
        }
        renderAlerts();
    };
    
-   window.acknowledgeAllAlerts = function() {
-       appState.alerts.forEach(a => {
-           if (!a.ack) logAlertAsEvent(a);
-           a.ack = true;
-       });
+   window.acknowledgeAllAlerts = async function() {
+       const unresolved = appState.alerts.filter(a => !a.ack);
+       unresolved.forEach(a => logAlertAsEvent(a));
+       // Resolve each real backend alert via the API; synthetic ones locally
+       await Promise.all(unresolved.map(a => resolveAlertOnBackend(a)));
        renderAlerts();
    };
    
@@ -1406,6 +1391,77 @@ body.innerHTML = `
    }
    
    // --- Chart.js ---
+   // Build the chart data arrays from real backend data (shared by init + refresh)
+   function buildChartData() {
+       const allReadings = appState.workers
+       .flatMap(worker => worker.sensorHistory || [])
+       .filter(reading => reading.recorded_at)
+       .sort((a, b) => new Date(a.recorded_at) - new Date(b.recorded_at));
+   
+   const tenMinutesAgo = Date.now() - (10 * 60 * 1000);
+   
+   let readings = allReadings.filter(
+       reading => new Date(reading.recorded_at).getTime() >= tenMinutesAgo
+   );
+   
+   if (readings.length < 2) {
+       readings = allReadings.slice(-6);
+   }
+
+    const labels = readings.map(reading => {
+    const date = new Date(reading.recorded_at);
+    return date.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+});
+const riskReadings = appState.riskHistory
+    .filter(risk => risk.created_at)
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+    .slice(-6);
+
+const riskLabels = riskReadings.map(risk => {
+    const date = new Date(risk.created_at);
+    return date.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+});
+
+       return {
+           labels,
+           temp: readings.map(r => r.temperature_c ?? 0),
+           gas: readings.map(r => r.gas_raw ?? 0),
+           water: readings.map(r => r.water_level_cm ?? 0),
+           riskLabels,
+           risk: riskReadings.map(r => r.risk_score ?? 0)
+       };
+   }
+
+   // Refresh existing chart instances in place — no new Chart objects, no leaks.
+   // If charts don't exist yet, or there is no data, do nothing.
+   function refreshCharts() {
+       if (!appState.charts.temp) return; // not initialized yet
+
+       const data = buildChartData();
+       const totalPoints = data.temp.length + data.gas.length + data.water.length + data.risk.length;
+       if (totalPoints === 0) return; // no data — keep charts as-is
+
+       appState.charts.temp.data.labels = data.labels;
+       appState.charts.temp.data.datasets[0].data = data.temp;
+
+       appState.charts.gas.data.labels = data.labels;
+       appState.charts.gas.data.datasets[0].data = data.gas;
+
+       appState.charts.water.data.labels = data.labels;
+       appState.charts.water.data.datasets[0].data = data.water;
+
+       appState.charts.risk.data.labels = data.riskLabels;
+       appState.charts.risk.data.datasets[0].data = data.risk;
+
+       Object.values(appState.charts).forEach(chart => chart.update('none'));
+   }
+
    function initCharts() {
     Object.values(appState.charts).forEach(chart => {
         if (chart) chart.destroy();
@@ -1448,66 +1504,34 @@ body.innerHTML = `
            });
        };
    
-       const allReadings = appState.workers
-       .flatMap(worker => worker.sensorHistory || [])
-       .filter(reading => reading.recorded_at)
-       .sort((a, b) => new Date(a.recorded_at) - new Date(b.recorded_at));
-   
-   const tenMinutesAgo = Date.now() - (10 * 60 * 1000);
-   
-   let readings = allReadings.filter(
-       reading => new Date(reading.recorded_at).getTime() >= tenMinutesAgo
-   );
-   
-   if (readings.length < 2) {
-       readings = allReadings.slice(-6);
-   }
+       const chartData = buildChartData();
 
-    const labels = readings.map(reading => {
-    const date = new Date(reading.recorded_at);
-    return date.toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit'
-    });
-});
-const riskReadings = appState.riskHistory
-    .filter(risk => risk.created_at)
-    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-    .slice(-6);
-
-const riskLabels = riskReadings.map(risk => {
-    const date = new Date(risk.created_at);
-    return date.toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit'
-    });
-});
 appState.charts.risk = createChart(
     'chart-risk',
     '#f97316',
-    riskReadings.map(r => r.risk_score ?? 0),
-    riskLabels
+    chartData.risk,
+    chartData.riskLabels
 );
 
 appState.charts.temp = createChart(
         'chart-temp',
         '#f59e0b',
-        readings.map(r => r.temperature_c ?? 0),
-        labels
+        chartData.temp,
+        chartData.labels
     );
 
     appState.charts.gas = createChart(
         'chart-gas',
         '#ef4444',
-        readings.map(r => r.gas_raw ?? 0),
-        labels
+        chartData.gas,
+        chartData.labels
     );
 
     appState.charts.water = createChart(
         'chart-water',
         '#3b82f6',
-        readings.map(r => r.water_level_cm ?? 0),
-        labels
+        chartData.water,
+        chartData.labels
     );
    }
    
@@ -1547,4 +1571,3 @@ appState.charts.temp = createChart(
            el.innerText = 'Operator';
        }
    }
-   getWorkersFromBackend();
