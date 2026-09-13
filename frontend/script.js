@@ -297,7 +297,7 @@ async function loadAlertsFromBackend() {
 
         if (!token) return;
 
-        const response = await fetch(`${API_BASE_URL}/alerts/RF-001`, {
+        const response = await fetch(`${API_BASE_URL}/alerts`, {
             headers: {
                 'Authorization': `Bearer ${token}`
             }
