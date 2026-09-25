@@ -12,7 +12,8 @@
  * OUTPUT: { risk_score, risk_level, reason }
  */
 
-const { detectFall, resetState, FALL_STATES } = require("./fallDetection");
+const { detectFall, resetState: resetFallState, FALL_STATES } = require("./fallDetection");
+const rollingWindow = require("./rollingWindow");
 
 // ─── Thresholds ──────────────────────────────────────────────
 
@@ -162,6 +163,167 @@ function countDangerSignals(scores) {
   return count;
 }
 
+// ─── Alert Stability (hysteresis) ─────────────────────────────
+//
+// A single noisy reading right at a threshold (score 29 ↔ 30) would
+// otherwise flip the reported level LOW ↔ MEDIUM every few seconds and
+// make the dashboard and alerts flicker. Two rules keep alerts trustworthy:
+//
+//   1. Escalation is ALWAYS immediate — danger never waits.
+//   2. De-escalation requires HYSTERESIS_HOLD_READINGS consecutive readings
+//      below the held level. While holding, the engine keeps reporting the
+//      held score/level AND the reason that established it, annotated with
+//      the hold counter so the output stays self-explanatory.
+//
+// State is keyed per device, so one device's emergency never bleeds into
+// another device's report (fall detection predates this and is global —
+// documented separately).
+
+const LEVEL_RANK = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
+const HYSTERESIS_HOLD_READINGS = 3;
+
+const hysteresisState = new Map(); // device_id → { level, score, reason, holdCount }
+
+function applyHysteresis(deviceId, rawScore, rawLevel, rawReason) {
+  const key = deviceId || "__default__";
+  const held = hysteresisState.get(key);
+
+  const adopt = () => {
+    hysteresisState.set(key, {
+      level: rawLevel,
+      score: rawScore,
+      reason: rawReason,
+      holdCount: 0,
+    });
+    return { score: rawScore, level: rawLevel, reason: rawReason, holding: false };
+  };
+
+  if (!held) return adopt();
+
+  // Rising (or steady) danger — adopt the new reading immediately.
+  if (LEVEL_RANK[rawLevel] >= LEVEL_RANK[held.level]) return adopt();
+
+  // Raw level dropped below the held level — count stable readings.
+  held.holdCount += 1;
+  if (held.holdCount >= HYSTERESIS_HOLD_READINGS) {
+    return adopt(); // hold window expired: stand down to the current reading
+  }
+
+  return {
+    score: held.score,
+    level: held.level,
+    reason:
+      `${held.reason}; Alert stability: holding ${held.level} ` +
+      `(${held.holdCount}/${HYSTERESIS_HOLD_READINGS} stable readings before standing down)`,
+    holding: true,
+  };
+}
+
+// ─── Rescue Recommendation (v2) ──────────────────────────────
+//
+// Turns "how dangerous" into "what to do". Pure function of the FINAL
+// (post-hysteresis) assessment, computed inside the rule engine so the
+// advice exists even when the Python AI server is offline — guidance must
+// never depend on a service that might be down.
+//
+// v2 (Day 2): also incorporates sequence intelligence — frozen sensors
+// and pre-threshold trend warnings — so the advice covers "your data may
+// be lying to you" and "danger is still N minutes away", not just the
+// current reading.
+//
+// Exported for tests; the field it builds ships as `recommendation` on
+// every calculateRisk() result (and travels to the backend through
+// controllers/aiIntegration.js).
+
+function buildRecommendation({ level, fallState, anomalyDetected, sos, dangerCount, stuckSensors = [], trendWarnings = [] }) {
+  const anomalyNote = anomalyDetected
+    ? " Also verify sensor/device health — the reading was flagged implausible."
+    : "";
+
+  const addenda = [];
+  if (stuckSensors.length > 0) {
+    addenda.push(
+      ` Sensor frozen (${stuckSensors.map((f) => rollingWindow.LABELS[f]).join("/")}) — ` +
+      "affected readings are unreliable; dispatch a device check."
+    );
+  }
+  if (trendWarnings.length > 0) {
+    addenda.push(
+      ` Pre-emptive: ${trendWarnings.map((w) => w.message).join("; ")} — ` +
+      "prepare before the threshold is crossed."
+    );
+  }
+  const seqNote = addenda.join("");
+
+  if (level === "CRITICAL") {
+    if (fallState === FALL_STATES.FALL_CONFIRMED) {
+      return "CRITICAL: evacuate the sector and dispatch the rescue team to the worker's last known location; assign first-aid on arrival." + anomalyNote + seqNote;
+    }
+    if (sos === true) {
+      return "CRITICAL: emergency SOS active — dispatch the rescue team immediately and evacuate nearby workers." + anomalyNote + seqNote;
+    }
+    const hazards = dangerCount >= 2 ? `${dangerCount} simultaneous hazards exceed safe limits` : "a hazard exceeds the critical limit";
+    return `CRITICAL: evacuate the sector and dispatch emergency response — ${hazards}.` + anomalyNote + seqNote;
+  }
+
+  if (level === "HIGH") {
+    return "HIGH: stop work in this area, send an inspection team with protective gear, and prepare evacuation." + anomalyNote + seqNote;
+  }
+
+  if (level === "MEDIUM") {
+    return "MEDIUM: alert the shift supervisor, inspect the reported hazards, and prepare an evacuation route." + anomalyNote + seqNote;
+  }
+
+  // LOW — anomalyNote is already baked into the implausible-reading line
+  if (fallState === FALL_STATES.FALL_CONFIRMED) {
+    return "Fall confirmed and the worker is still down — keep the rescue team dispatched; re-check when posture recovers." + seqNote;
+  }
+  if (fallState === FALL_STATES.POSSIBLE_FALL) {
+    return "Possible fall: contact the worker by radio and verify their status." + seqNote;
+  }
+  if (anomalyDetected) {
+    return "Risk is low, but the sensor reading looks implausible: check the device and keep monitoring." + seqNote;
+  }
+  return "Normal operation: continue routine monitoring." + seqNote;
+}
+
+// ─── Risk Factors (explainability) ───────────────────────────
+//
+// Per-factor contribution to the assessment — the "why" behind the
+// number, as a list of { source, name, points, detail }. Ships on every
+// result as `risk_factors` and reaches the API as `ai.aiRiskFactors`
+// (aiIntegration.js appends the ML opinion). Every result carries at
+// least one factor, so the frontend can always render an explanation.
+
+function buildRiskFactors({ sensorData, scores, baseScore, riskScore, multiplier, dangerCount, anomaly, stable, windowResult }) {
+  const factors = [];
+  const add = (source, name, points, detail) =>
+    factors.push({ source, name, points: Math.round(points), detail });
+
+  if (scores.temperature.score > 0) add("rules", "temperature_c", scores.temperature.score, `${scores.temperature.label} (${sensorData.temperature_c}°C)`);
+  if (scores.gas.score > 0) add("rules", "gas_raw", scores.gas.score, `${scores.gas.label} (${sensorData.gas_raw})`);
+  if (scores.water.score > 0) add("rules", "water_level_cm", scores.water.score, `${scores.water.label} (${sensorData.water_level_cm}cm)`);
+  if (scores.sos.score > 0) add("rules", "sos", scores.sos.score, scores.sos.label);
+  if (scores.fall.score > 0) add("rules", "fall", scores.fall.score, scores.fall.label || "Fall signature");
+  if (multiplier > 1.0) {
+    // Contribution of the multiplier: final vs pre-multiplier score,
+    // floored at 0 (when the score is already capped the multiplier's
+    // contribution is genuinely 0 — the detail still names it).
+    add("rules", "combined_danger", Math.max(0, riskScore - Math.min(baseScore, 100)),
+      `Combined danger multiplier ×${multiplier} (${dangerCount} simultaneous hazards)`);
+  }
+  if (anomaly.anomalyDetected) {
+    add("anomaly", "anomaly", anomaly.anomalyScore, anomaly.anomalyReasons.join("; "));
+  }
+  for (const w of windowResult.trendWarnings) add("trend", w.sensor, 0, w.message);
+  if (stable.holding) {
+    add("stability", "hysteresis", 0, `Level held at ${stable.level} during de-escalation window`);
+  }
+  if (factors.length === 0) add("rules", "baseline", 0, "All sensors within normal range");
+
+  return factors;
+}
+
 // ─── Main Risk Calculation ───────────────────────────────────
 
 /**
@@ -217,6 +379,15 @@ function calculateRisk(sensorData) {
   // Rule-based anomaly detection on the raw reading
   const anomaly = detectAnomaly(sensorData);
 
+  // Sequence-based checks (rolling window): frozen sensors join the
+  // anomaly verdict; trend warnings are computed for the reason/factors.
+  const windowResult = rollingWindow.feedReading(sensorData.device_id, sensorData);
+  if (windowResult.stuckSensors.length > 0) {
+    anomaly.anomalyDetected = true;
+    anomaly.anomalyScore = Math.min(100, anomaly.anomalyScore + 30 * windowResult.stuckSensors.length);
+    anomaly.anomalyReasons.push(...windowResult.stuckReasons);
+  }
+
   // Base score: sum of individual scores
   let baseScore =
     scores.temperature.score +
@@ -265,7 +436,7 @@ function calculateRisk(sensorData) {
   if (anyCritical && riskLevel === "LOW") riskLevel = "MEDIUM";
   if (anyCritical && riskLevel === "MEDIUM") riskLevel = "HIGH";
 
-  // Collect reasons
+  // Collect reasons (raw, for THIS reading)
   const reasons = [];
   if (scores.temperature.label) reasons.push(scores.temperature.label);
   if (scores.gas.label) reasons.push(scores.gas.label);
@@ -274,16 +445,64 @@ function calculateRisk(sensorData) {
   if (scores.fall.label) reasons.push(scores.fall.label);
   if (dangerCount >= 2) reasons.push(`Combined danger (${dangerCount} simultaneous hazards)`);
   if (anomaly.anomalyDetected) reasons.push(`Anomaly: ${anomaly.anomalyReasons.join(", ")}`);
+  // Pre-threshold trend warnings (deriveAlerts-safe wording — see rollingWindow.js)
+  for (const w of windowResult.trendWarnings) reasons.push(w.message);
+
+  const rawReason = reasons.length > 0 ? reasons.join("; ") : "No major risk detected";
+
+  // Alert stability: escalate instantly, but a de-escalation only lands
+  // after HYSTERESIS_HOLD_READINGS consecutive readings below the held
+  // level (see applyHysteresis above).
+  const stable = applyHysteresis(sensorData.device_id, riskScore, riskLevel, rawReason);
 
   return {
-    risk_score: riskScore,
-    risk_level: riskLevel,
-    reason: reasons.length > 0 ? reasons.join("; ") : "No major risk detected",
+    risk_score: stable.score,
+    risk_level: stable.level,
+    reason: stable.reason,
     anomaly_detected: anomaly.anomalyDetected,
     anomaly_score: anomaly.anomalyScore,
     fall_state: fallInfo.state,
     fall_score: fallInfo.score,
+    // Sequence intelligence (Day 2) — always present, may be empty
+    stuck_sensors: windowResult.stuckSensors,
+    trend_warnings: windowResult.trendWarnings,
+    risk_factors: buildRiskFactors({
+      sensorData, scores, baseScore, riskScore, multiplier, dangerCount,
+      anomaly, stable, windowResult,
+    }),
+    // Actionable next step derived from the FINAL assessment — present on
+    // every result, including fallback/offline paths.
+    recommendation: buildRecommendation({
+      level: stable.level,
+      fallState: fallInfo.state,
+      anomalyDetected: anomaly.anomalyDetected,
+      sos: sensorData.sos === true,
+      dangerCount,
+      stuckSensors: windowResult.stuckSensors,
+      trendWarnings: windowResult.trendWarnings,
+    }),
   };
 }
 
-module.exports = { calculateRisk, resetState, THRESHOLDS, FALL_STATES, detectAnomaly, ANOMALY_ENVELOPE };
+/**
+ * Reset session state: fall detection AND alert-stability (hysteresis).
+ * Tests call this between cases; the simulator calls it on scenario
+ * switches. The backend intentionally never resets mid-session — that is
+ * what keeps the hold window meaningful across readings.
+ */
+function resetState() {
+  resetFallState();
+  hysteresisState.clear();
+  rollingWindow.reset();
+}
+
+module.exports = {
+  calculateRisk,
+  resetState,
+  THRESHOLDS,
+  FALL_STATES,
+  detectAnomaly,
+  ANOMALY_ENVELOPE,
+  HYSTERESIS_HOLD_READINGS,
+  buildRecommendation,
+};

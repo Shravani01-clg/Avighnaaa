@@ -39,12 +39,22 @@ Sensor Data (JSON)
   "anomaly_score": 0,
   "fall_state": "NORMAL",
   "fall_score": 0,
-  "reason": "No major risk detected"
+  "reason": "No major risk detected",
+  "recommendation": "Normal operation: continue routine monitoring.",
+  "stuck_sensors": [],
+  "trend_warnings": [],
+  "risk_factors": [
+    { "source": "rules", "name": "baseline", "points": 0, "detail": "All sensors within normal range" }
+  ]
 }
 ```
 
-- `anomaly_detected` — rule-based anomaly check (implausible readings / sensor faults)
+- `anomaly_detected` — rule-based anomaly check (implausible readings / sensor faults / frozen sensors)
 - `fall_state` — `NORMAL` → `SUDDEN_MOVEMENT` → `POSSIBLE_FALL` → `FALL_CONFIRMED`
+- `recommendation` — what to do next (present even on invalid input)
+- `stuck_sensors` / `trend_warnings` — sequence intelligence from the
+  rolling window (Day 2): frozen channels and pre-threshold rising trends
+- `risk_factors` — explainable per-factor contributions (≥ 1 always)
 
 See `AI_DOCUMENTATION.md` in the repo root for the full spec.
 
@@ -102,28 +112,33 @@ node -e "const { analyzeRisk } = require('./risk-module'); console.log(JSON.stri
 
 | Factor | Scoring |
 |--------|---------|
-| Temperature | ≥55°C: +35, ≥45°C: +25, ≥38°C: +10 |
-| Gas Level | ≥800: +35, ≥600: +25, ≥400: +10 |
-| Water Level | ≥40cm: +30, ≥25cm: +20, ≥15cm: +10 |
+| Temperature | ≥55°C: +35, ≥45°C: +30, ≥38°C: +10 |
+| Gas Level | ≥800: +35, ≥600: +30, ≥400: +10 |
+| Water Level | ≥40cm: +30, ≥25cm: +25, ≥15cm: +10 |
 | SOS Button | Pressed: +40 |
 | Fall Detection | Detected: up to +100 |
 | Combined Danger | 2 hazards: 1.3x, 3: 1.6x, 4+: 2.0x multiplier |
+
+Alert stability: escalation is immediate; de-escalation waits for 3
+consecutive readings below the held level (per device) so levels never
+flap on threshold noise.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `index.js` | Main entry point — `analyzeRisk(sensorData)` |
-| `riskEngine.js` | Risk calculation + rule-based anomaly detection |
+| `riskEngine.js` | Risk calculation + rule-based anomaly detection + hysteresis + recommendation + risk factors |
 | `fallDetection.js` | Accelerometer fall detection with 4-state progression |
+| `rollingWindow.js` | Day 2: per-device rolling window — stuck-sensor + trend detection |
 | `test.js` | Legacy test script |
-| `validate.js` | Phase 3 validation gate (run this) |
+| `validate.js` | Validation gate (run this — 27 checks) |
 | `README.md` | This file |
 
 ## Testing
 
 ```bash
-node risk-module/validate.js   # Phase 3 gate — scenarios, contract, fall states, anomaly FP
+node risk-module/validate.js   # gate — scenarios, contract, fall states, anomaly FP, alert stability, sequence intelligence (27 checks)
 node risk-module/test.js       # legacy suite
 ```
 

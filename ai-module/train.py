@@ -3,7 +3,8 @@ Train All Models
 
 Run this script to:
 1. Generate training data from simulator scenarios
-2. Train the anomaly detector (on normal data only)
+2. Train the anomaly detector (on rule-engine LOW data — same pool the
+   validation gate uses, so what ships is what was validated)
 3. Train the risk predictor (on all labeled data)
 4. Save both models to disk
 
@@ -50,18 +51,29 @@ def main():
     df.to_csv(dataset_path, index=False)
     print(f"   Saved to: {dataset_path}")
 
-    # ── Step 2: Train anomaly detector (normal data only) ──
+    # ── Step 2: Train anomaly detector (deployment semantics) ──
     print("\n🔍 Step 2: Training anomaly detector...")
-    normal_df = df[df["scenario"] == "normal"].copy()
-    print(f"   Training on {len(normal_df)} normal samples...")
+    # "Normal" = everything the rule engine scores LOW — the SAME pool the
+    # validation gate (validate_models.py) trains and tests on.
+    #
+    # Training on the narrow `scenario == "normal"` rows instead made the
+    # deployed model flag legitimate elevated readings (gas 400–599,
+    # water 15–25 cm, temp 38–45 °C — all LOW per the rules) as
+    # "implausible": measured 50.5% false-positive rate on LOW rows
+    # against a 5% gate limit. That train/serve skew is caught by
+    # validate_models.py §5, which gates the shipped .pkl directly.
+    normal_df = df[df["risk_level"] == "LOW"].copy()
+    print(f"   Training on {len(normal_df)} rule-engine LOW samples...")
 
     anomaly_detector = AnomalyDetector()
     anomaly_detector.train(normal_df)
     anomaly_detector.save()
 
-    # Test anomaly detection on danger data
-    danger_samples = df[df["scenario"] != "normal"].head(10)
-    print(f"\n   Testing on {len(danger_samples)} danger samples:")
+    # Test anomaly detection on rule-danger rows — flagging these is a
+    # bonus: the rule engine owns known hazards, the ML detector's core
+    # job is sensor faults (validate_models.py §2 gates that separately).
+    danger_samples = df[df["risk_level"] != "LOW"].head(10)
+    print(f"\n   Testing on {len(danger_samples)} rule-danger rows:")
     for _, row in danger_samples.iterrows():
         result = anomaly_detector.predict(row.to_dict())
         status = "🚨 ANOMALY" if result["is_anomaly"] else "✅ normal"

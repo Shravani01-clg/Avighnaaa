@@ -4,14 +4,12 @@ Dataset Generator
 Generates labeled sensor data for training ML models.
 Uses the same physics as the Node.js simulator but produces CSV/JSON datasets.
 
-Scenarios generate labeled data:
-  - normal: risk_level = LOW
-  - gas buildup: risk_level escalates MEDIUM → HIGH
-  - flood: risk_level escalates MEDIUM → HIGH
-  - overheat: risk_level escalates MEDIUM → HIGH
-  - worker fall: risk_level = CRITICAL
-  - SOS: risk_level = CRITICAL
-  - combined danger: risk_level = CRITICAL
+Scenarios generate readings; labels are produced by rule_label() — a
+Python mirror of the deployed riskEngine.js (see its docstring), so
+training labels always match deployment behavior:
+  - normal / elevated-but-safe: LOW
+  - hazard buildups: MEDIUM → HIGH → CRITICAL as thresholds are crossed
+  - fall / SOS / combined danger: HIGH or CRITICAL (multiplier + floors)
 """
 
 import numpy as np
@@ -25,11 +23,22 @@ def rule_label(row):
     """
     Python port of the deployed risk-module/riskEngine.js scoring, used to
     label training data. Phase 3 requirement: ML training labels must match
-    deployment behavior, otherwise the anomaly detector 'learns' a different
-    definition of normal than the one the rules enforce.
+    deployment behavior, otherwise the model 'learns' a different definition
+    of risk than the one the rules enforce.
 
-    Thresholds mirror riskEngine.js: temp 38/45/55, gas 400/600/800,
-    water 15/25/40, SOS +40, HIGH hazard ⇒ ≥MEDIUM, CRITICAL hazard ⇒ ≥HIGH.
+    Mirrors riskEngine.js exactly:
+      per-sensor scores   temp 35/30/10, gas 35/30/10, water 30/25/10,
+                          SOS 40 (all thresholds 38/45/55, 400/600/800,
+                          15/25/40),
+      danger multiplier   2 signals → ×1.3, 3 → ×1.6, ≥4 → ×2.0,
+      score → level       ≥80 CRITICAL, ≥55 HIGH, ≥30 MEDIUM, else LOW,
+      hazard floors       any HIGH ⇒ ≥MEDIUM, any CRITICAL ⇒ ≥HIGH
+                          (including the MEDIUM→HIGH critical floor).
+
+    Fall detection is a stateless impact/free-fall heuristic standing in
+    for the JS session state machine — rows in coherent fall sequences get
+    their terminal-state label. Documented as a port limitation; fall rows
+    are never LOW either way, so the anomaly 'normal' pool is unaffected.
     """
     temp = row["temperature_c"]
     gas = row["gas_raw"]
@@ -37,39 +46,63 @@ def rule_label(row):
     ax, ay, az = row["acceleration_x_ms2"], row["acceleration_y_ms2"], row["acceleration_z_ms2"]
     sos = bool(row.get("sos", False))
 
-    score = 0
-    critical = high = False
+    # Per-sensor score + level (mirrors scoreTemperature/scoreGas/scoreWater/scoreSOS)
+    if temp >= 55: t_s, t_l = 35, "critical"
+    elif temp >= 45: t_s, t_l = 30, "high"
+    elif temp >= 38: t_s, t_l = 10, "elevated"
+    else: t_s, t_l = 0, "safe"
 
-    if temp >= 55: score += 35; critical = True
-    elif temp >= 45: score += 25; high = True
-    elif temp >= 38: score += 10
+    if gas >= 800: g_s, g_l = 35, "critical"
+    elif gas >= 600: g_s, g_l = 30, "high"
+    elif gas >= 400: g_s, g_l = 10, "elevated"
+    else: g_s, g_l = 0, "safe"
 
-    if gas >= 800: score += 35; critical = True
-    elif gas >= 600: score += 25; high = True
-    elif gas >= 400: score += 10
+    if water >= 40: w_s, w_l = 30, "critical"
+    elif water >= 25: w_s, w_l = 25, "high"
+    elif water >= 15: w_s, w_l = 10, "elevated"
+    else: w_s, w_l = 0, "safe"
 
-    if water >= 40: score += 30; critical = True
-    elif water >= 25: score += 20; high = True
-    elif water >= 15: score += 10
+    s_s, s_l = (40, "critical") if sos else (0, "safe")
 
-    if sos: score += 40; critical = True
+    # Stateless fall heuristic (see docstring): impact-range magnitude →
+    # critical (matches a confirmed fall), free-fall/tilted → high
+    # (mirrors JS "fallScore > 30 ⇒ high"), otherwise safe.
+    total_a = (ax ** 2 + ay ** 2 + az ** 2) ** 0.5
+    if total_a > 25:
+        f_s, f_l = 50, "critical"
+    elif total_a < 2.0 or (4 < az < 7 and total_a > 6):
+        f_s, f_l = 40, "high"
+    else:
+        f_s, f_l = 0, "safe"
 
-    # Fall logic: impact+free-fall is confirmed fall; impact alone or lying alone
-    # contributes partial score (simplified — the JS engine uses session state)
-    total_a = (ax**2 + ay**2 + az**2) ** 0.5
-    if total_a > 25:  # impact-range magnitude
-        score += 50
-        critical = True
-    elif total_a < 2.0 or (4 < az < 7 and total_a > 6):  # free-fall or lying orientation
-        score += 40
+    # Combined danger multiplier (mirrors countDangerSignals + calculateRisk)
+    danger = 0
+    if t_l in ("high", "critical"): danger += 1
+    if g_l in ("high", "critical"): danger += 1
+    if w_l in ("high", "critical"): danger += 1
+    if s_l == "critical": danger += 1
+    if f_l in ("high", "critical"): danger += 1
+    multiplier = 2.0 if danger >= 4 else 1.6 if danger == 3 else 1.3 if danger == 2 else 1.0
 
-    score = min(score, 100)
-    if score >= 80: return "CRITICAL"
-    if score >= 55: return "HIGH"
-    if score >= 30: return "MEDIUM"
-    if critical: return "HIGH"  # any critical sensor floors at HIGH
-    if high: return "MEDIUM"    # any high hazard floors at MEDIUM (Phase 3)
-    return "LOW"
+    # JS: Math.round(Math.min(base * multiplier, 100)) — half-up rounding
+    score = int(min((t_s + g_s + w_s + s_s + f_s) * multiplier, 100) + 0.5)
+
+    if score >= 80: level = "CRITICAL"
+    elif score >= 55: level = "HIGH"
+    elif score >= 30: level = "MEDIUM"
+    else: level = "LOW"
+
+    # Hazard floors (mirrors riskEngine.js: anyHigh && LOW→MEDIUM,
+    # anyCritical && LOW→MEDIUM→HIGH, anyCritical && MEDIUM→HIGH)
+    any_high = t_l == "high" or g_l == "high" or w_l == "high" or f_l == "high"
+    any_critical = (
+        t_l == "critical" or g_l == "critical" or w_l == "critical"
+        or s_l == "critical" or f_l == "critical"
+    )
+    if any_high and level == "LOW": level = "MEDIUM"
+    if any_critical and level == "LOW": level = "MEDIUM"
+    if any_critical and level == "MEDIUM": level = "HIGH"
+    return level
 
 # ─── Normal Data Generator ───────────────────────────────────
 
