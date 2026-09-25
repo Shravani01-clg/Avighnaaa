@@ -45,6 +45,10 @@ function analyzeRisk(sensorData) {
       fall_state: "NORMAL",
       fall_score: 0,
       reason: "Invalid input: sensor data required",
+      recommendation: "Cannot advise — no valid sensor reading received; check the device connection.",
+      stuck_sensors: [],
+      trend_warnings: [],
+      risk_factors: [{ source: "rules", name: "baseline", points: 0, detail: "No valid reading to assess" }],
     };
   }
 
