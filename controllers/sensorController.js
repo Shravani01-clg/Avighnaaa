@@ -9,14 +9,16 @@ const ALERT_SEVERITY = {
   FLOOD_DANGER: "HIGH",
   TEMP_DANGER: "HIGH",
   FALL_DETECTED: "CRITICAL",
-  POSSIBLE_FALL: "HIGH", // fall signature forming — not yet confirmed
+  POSSIBLE_FALL: "HIGH",
   SOS: "CRITICAL",
   COMBINED_DANGER: "CRITICAL",
-  ANOMALY: "MEDIUM",     // ML anomaly detector flagged the reading
-  HIGH_RISK: "HIGH",  // legacy, kept for backwards compat
+  ANOMALY: "MEDIUM",
+  HIGH_RISK: "HIGH",
+  SENSOR_STUCK: "MEDIUM",
 };
 
 const ALERT_MESSAGES = {
+  SENSOR_STUCK: "Sensor frozen — device check required",
   GAS_DANGER: "Dangerous gas levels detected",
   FLOOD_DANGER: "Flooding / high water level detected",
   TEMP_DANGER: "Abnormal temperature detected",
@@ -165,14 +167,14 @@ const receiveSensorData = async (req, res) => {
 
     // ── Store risk prediction ──
     const riskData = await store.insert("risk_predictions", {
-      device_id,
-      risk_score: risk.risk_score,
-      risk_level: risk.risk_level,
-      reason: risk.reason,
-      anomaly_detected: risk.anomaly_detected,
-      fall_state: risk.fall_state
-    });
-
+  device_id,
+  risk_score: risk.risk_score,
+  risk_level: risk.risk_level,
+  reason: risk.reason,
+  anomaly_detected: risk.anomaly_detected,
+  fall_state: risk.fall_state,
+  ai: risk.ai
+});
     // store.insert returns an array of inserted rows — unwrap for the API contract
     const riskRecord = Array.isArray(riskData) ? riskData[0] : riskData;
 
