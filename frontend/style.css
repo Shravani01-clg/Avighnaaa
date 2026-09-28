@@ -602,6 +602,150 @@ a { color: inherit; }
     margin-bottom: 8px;
 }
 
+/* ─── AI integration extras (source badge, ML chip, warnings, why-score) ─── */
+.is-hidden { display: none !important; }
+
+.ai-source-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    border: 1px solid var(--border-light);
+    color: var(--text-muted);
+    background: var(--bg-card);
+    white-space: nowrap;
+}
+
+.ai-source-badge::before {
+    content: '';
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-muted);
+}
+
+.ai-source-badge[data-source="online"] {
+    color: var(--color-safe);
+    border-color: rgba(63, 174, 106, 0.45);
+    background: rgba(63, 174, 106, 0.08);
+}
+.ai-source-badge[data-source="online"]::before { background: var(--color-safe); box-shadow: 0 0 6px rgba(63, 174, 106, 0.7); }
+
+.ai-source-badge[data-source="offline"] {
+    color: var(--color-warning);
+    border-color: rgba(201, 138, 18, 0.45);
+    background: rgba(201, 138, 18, 0.08);
+}
+.ai-source-badge[data-source="offline"]::before { background: var(--color-warning); box-shadow: 0 0 6px rgba(201, 138, 18, 0.7); }
+
+.ai-ml-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    color: #b18ae0;
+    border: 1px solid rgba(177, 138, 224, 0.45);
+    background: rgba(177, 138, 224, 0.08);
+    white-space: nowrap;
+}
+
+.ai-recommendation-inline {
+    margin-bottom: 16px;
+    padding: 12px 14px;
+    border-radius: 6px;
+    border-left: 3px solid var(--color-critical);
+    background: rgba(196, 62, 62, 0.08);
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--text-main);
+}
+
+.ai-warning {
+    margin-bottom: 12px;
+    padding: 10px 13px;
+    border-radius: 5px;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-line;
+}
+
+.ai-warning-stuck {
+    color: var(--color-warning);
+    border: 1px solid rgba(201, 138, 18, 0.35);
+    background: rgba(201, 138, 18, 0.08);
+}
+
+.ai-warning-trend {
+    color: var(--color-high);
+    border: 1px solid rgba(224, 122, 42, 0.35);
+    background: rgba(224, 122, 42, 0.08);
+}
+
+.ai-why {
+    margin-bottom: 18px;
+}
+
+.ai-why h4 {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+}
+
+.ai-why ul { list-style: none; margin: 0; padding: 0; }
+
+.ai-why li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 12.5px;
+    color: var(--text-main);
+}
+
+.ai-why .why-source {
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    border: 1px solid var(--border-light);
+    color: var(--text-muted);
+    background: var(--bg-card);
+}
+
+.ai-why .why-source-rules { color: var(--color-info); border-color: rgba(59, 130, 246, 0.4); background: rgba(59, 130, 246, 0.08); }
+.ai-why .why-source-anomaly { color: #b18ae0; border-color: rgba(177, 138, 224, 0.4); background: rgba(177, 138, 224, 0.08); }
+.ai-why .why-source-trend { color: var(--color-high); border-color: rgba(224, 122, 42, 0.45); background: rgba(224, 122, 42, 0.1); }
+.ai-why .why-source-stability { color: var(--color-warning); border-color: rgba(201, 138, 18, 0.4); background: rgba(201, 138, 18, 0.08); }
+.ai-why .why-source-ml { color: var(--color-safe); border-color: rgba(63, 174, 106, 0.4); background: rgba(63, 174, 106, 0.08); }
+
+.ai-why .why-name { flex: 1 1 auto; }
+
+.ai-why .why-points {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-high);
+}
+
+.ai-why .why-detail {
+    flex-basis: 100%;
+    font-size: 11.5px;
+    color: var(--text-muted);
+    line-height: 1.5;
+}
+
 .ai-recommendation {
     padding: 14px;
     background-color: rgba(59, 130, 246, 0.08);

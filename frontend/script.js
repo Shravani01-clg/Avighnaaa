@@ -62,8 +62,302 @@ function typeChipClass(alertType) {
     if (t === 'AI_RISK_UPGRADE') return 'chip-ai';
     if (t === 'FALL_DETECTED' || t === 'COMBINED_DANGER') return 'chip-critical';
     if (t === 'GAS_DANGER' || t === 'FLOOD_DANGER' || t === 'TEMP_DANGER') return 'chip-high';
+    if (t === 'SENSOR_STUCK') return 'chip-anomaly';
 
     return '';
+}
+
+// ==========================================================================
+// AI Integration Extras (source badge, ML chip, warnings, why-score)
+// ==========================================================================
+
+function normalizeAISource(source) {
+    return String(source || '').trim().toLowerCase();
+}
+
+function formatAIConfidencePercent(value) {
+    const num = Number(value);
+
+    if (!Number.isFinite(num)) return null;
+
+    // The API may send confidence as 0-1 or already as 0-100.
+    const pct = num > 1 ? num : num * 100;
+
+    return Math.round(pct);
+}
+
+function renderAISourceBadge(aiRisk) {
+    const badge = document.getElementById('ai-source-badge');
+
+    if (!badge) return;
+
+    const source = normalizeAISource(aiRisk?.source);
+
+    if (source === 'ml_fusion') {
+        badge.dataset.source = 'online';
+        badge.innerText = 'AI Online';
+    } else if (source === 'rules_fallback') {
+        badge.dataset.source = 'offline';
+        badge.innerText = 'Rules Only (AI Offline)';
+    } else {
+        badge.dataset.source = 'unknown';
+        badge.innerText = 'AI status unknown';
+    }
+}
+
+function renderAIMLchip(aiRisk) {
+    const chip = document.getElementById('ai-ml-chip');
+
+    if (!chip) return;
+
+    const source = normalizeAISource(aiRisk?.source);
+    const prediction = aiRisk?.mlRiskPrediction;
+
+    if (
+        source !== 'ml_fusion' ||
+        prediction === null ||
+        prediction === undefined ||
+        prediction === ''
+    ) {
+        chip.classList.add('is-hidden');
+        chip.innerText = '';
+        return;
+    }
+
+    const pct = formatAIConfidencePercent(aiRisk?.mlConfidence);
+
+    chip.innerText =
+        `ML: ${String(prediction).toUpperCase()}` +
+        (pct !== null ? ` (${pct}%)` : '');
+
+    chip.classList.remove('is-hidden');
+}
+
+function renderAIRecommendationInline(aiRisk) {
+    const el = document.getElementById('ai-recommendation-inline');
+
+    if (!el) return;
+
+    const recommendation =
+        aiRisk?.recommendation || aiRisk?.reason;
+
+    if (
+        recommendation === null ||
+        recommendation === undefined ||
+        String(recommendation).trim() === ''
+    ) {
+        el.classList.add('is-hidden');
+        el.innerText = '';
+        return;
+    }
+
+    el.innerText = String(recommendation);
+    el.classList.remove('is-hidden');
+}
+
+function collectWorkerField(workers, picker) {
+    const out = [];
+    const seen = new Set();
+
+    (workers || []).forEach(worker => {
+        const value = picker(worker);
+        const items = Array.isArray(value)
+            ? value
+            : value === null ||
+              value === undefined ||
+              value === ''
+            ? []
+            : [value];
+
+        items.forEach(item => {
+            if (item === null || item === undefined) return;
+
+            const key =
+                typeof item === 'object'
+                    ? JSON.stringify(item)
+                    : String(item);
+
+            if (seen.has(key)) return;
+
+            seen.add(key);
+            out.push(item);
+        });
+    });
+
+    return out;
+}
+
+function trendWarningMessage(warning) {
+    if (warning === null || warning === undefined) return '';
+
+    if (typeof warning === 'string') return warning;
+
+    if (typeof warning === 'object') {
+        return (
+            warning.message ||
+            warning.text ||
+            warning.detail ||
+            ''
+        );
+    }
+
+    return String(warning);
+}
+
+function renderAIWarnings(stuckSensors, trendWarnings) {
+    const stuckEl = document.getElementById('ai-stuck-warning');
+
+    if (stuckEl) {
+        const stuck = (Array.isArray(stuckSensors)
+            ? stuckSensors
+            : []
+        ).filter(Boolean);
+
+        if (stuck.length) {
+            stuckEl.innerText =
+                '⚠ Frozen sensor — ' +
+                stuck.join(', ') +
+                (stuck.length > 1
+                    ? ' readings unreliable'
+                    : ' reading unreliable');
+
+            stuckEl.classList.remove('is-hidden');
+        } else {
+            stuckEl.innerText = '';
+            stuckEl.classList.add('is-hidden');
+        }
+    }
+
+    const trendEl = document.getElementById('ai-trend-warning');
+
+    if (trendEl) {
+        const messages = (Array.isArray(trendWarnings)
+            ? trendWarnings
+            : []
+        )
+            .map(trendWarningMessage)
+            .filter(message => String(message).trim() !== '');
+
+        if (messages.length) {
+            trendEl.innerText = messages
+                .map(message => `⚠ ${message}`)
+                .join('\n');
+
+            trendEl.classList.remove('is-hidden');
+        } else {
+            trendEl.innerText = '';
+            trendEl.classList.add('is-hidden');
+        }
+    }
+}
+
+function renderAIWhyScore(factors) {
+    const panel = document.getElementById('ai-why');
+    const list = document.getElementById('ai-why-list');
+
+    if (!panel || !list) return;
+
+    const items = Array.isArray(factors)
+        ? factors.filter(Boolean)
+        : [];
+
+    if (!items.length) {
+        list.innerHTML = '';
+        panel.classList.add('is-hidden');
+        return;
+    }
+
+    list.innerHTML = items
+        .map(factor => {
+            const source = normalizeAISource(factor.source);
+            const name = safeText(factor.name, 'Risk factor');
+            const points = Number(factor.points);
+            const pointsText = Number.isFinite(points)
+                ? `${points > 0 ? '+' : ''}${points}`
+                : '';
+            const detail = factor.detail
+                ? `<div class="why-detail">${safeText(
+                      factor.detail,
+                      ''
+                  )}</div>`
+                : '';
+
+            return `
+                <li>
+                    ${
+                        source
+                            ? `<span class="why-source why-source-${source}">${source}</span>`
+                            : ''
+                    }
+                    <span class="why-name">${name}</span>
+                    ${
+                        pointsText
+                            ? `<span class="why-points">${pointsText}</span>`
+                            : ''
+                    }
+                    ${detail}
+                </li>
+            `;
+        })
+        .join('');
+
+    panel.classList.remove('is-hidden');
+}
+
+function renderAIExtras(aiRisk, workers) {
+    renderAISourceBadge(aiRisk);
+    renderAIMLchip(aiRisk);
+    renderAIRecommendationInline(aiRisk);
+    renderAIWhyScore(aiRisk?.aiRiskFactors);
+    renderAIWarnings(
+        collectWorkerField(
+            workers,
+            worker => worker.aiRisk?.stuckSensors
+        ),
+        collectWorkerField(
+            workers,
+            worker => worker.aiRisk?.trendWarnings
+        )
+    );
+}
+
+function resetAIExtras() {
+    const badge = document.getElementById('ai-source-badge');
+
+    if (badge) {
+        badge.dataset.source = 'unknown';
+        badge.innerText = 'AI status unknown';
+    }
+
+    const chip = document.getElementById('ai-ml-chip');
+
+    if (chip) {
+        chip.classList.add('is-hidden');
+        chip.innerText = '';
+    }
+
+    const inlineRec = document.getElementById(
+        'ai-recommendation-inline'
+    );
+
+    if (inlineRec) {
+        inlineRec.classList.add('is-hidden');
+        inlineRec.innerText = '';
+    }
+
+    const whyPanel = document.getElementById('ai-why');
+
+    if (whyPanel) {
+        whyPanel.classList.add('is-hidden');
+    }
+
+    const whyList = document.getElementById('ai-why-list');
+
+    if (whyList) {
+        whyList.innerHTML = '';
+    }
+
+    renderAIWarnings([], []);
 }
 
 function setRiskPill(level) {
@@ -121,6 +415,8 @@ function resetAIPanel() {
         aiRecommendation.innerHTML =
             '<strong>AI Recommendation:</strong><br>Waiting for latest AI risk analysis.';
     }
+
+    resetAIExtras();
 }
 
 function safeText(value, fallback = 'N/A') {
@@ -896,7 +1192,42 @@ async function loadRiskFromBackend() {
                     latestRisk.reason,
 
                 createdAt:
-                    latestRisk.created_at
+                    latestRisk.created_at,
+
+                mlConfidence:
+                    latestRisk.ai?.mlConfidence,
+
+                mlRiskPrediction:
+                    latestRisk.ai?.mlRiskPrediction,
+
+                anomalyDetected:
+                    latestRisk.ai?.anomalyDetected,
+
+                anomalyScore:
+                    latestRisk.ai?.anomalyScore,
+
+                combinedScore:
+                    latestRisk.ai?.combinedScore,
+
+                source:
+                    latestRisk.ai?.source ??
+                    latestRisk.source,
+
+                recommendation:
+                    latestRisk.ai?.recommendation ??
+                    latestRisk.recommendation,
+
+                aiRiskFactors:
+                    latestRisk.ai?.aiRiskFactors ??
+                    latestRisk.aiRiskFactors,
+
+                stuckSensors:
+                    latestRisk.ai?.stuckSensors ??
+                    latestRisk.stuckSensors,
+
+                trendWarnings:
+                    latestRisk.ai?.trendWarnings ??
+                    latestRisk.trendWarnings
             };
         }
 
@@ -1012,7 +1343,42 @@ async function loadRiskHistory() {
                     latestRisk.reason,
 
                 createdAt:
-                    latestRisk.created_at
+                    latestRisk.created_at,
+
+                mlConfidence:
+                    latestRisk.ai?.mlConfidence,
+
+                mlRiskPrediction:
+                    latestRisk.ai?.mlRiskPrediction,
+
+                anomalyDetected:
+                    latestRisk.ai?.anomalyDetected,
+
+                anomalyScore:
+                    latestRisk.ai?.anomalyScore,
+
+                combinedScore:
+                    latestRisk.ai?.combinedScore,
+
+                source:
+                    latestRisk.ai?.source ??
+                    latestRisk.source,
+
+                recommendation:
+                    latestRisk.ai?.recommendation ??
+                    latestRisk.recommendation,
+
+                aiRiskFactors:
+                    latestRisk.ai?.aiRiskFactors ??
+                    latestRisk.aiRiskFactors,
+
+                stuckSensors:
+                    latestRisk.ai?.stuckSensors ??
+                    latestRisk.stuckSensors,
+
+                trendWarnings:
+                    latestRisk.ai?.trendWarnings ??
+                    latestRisk.trendWarnings
             };
         }
 
@@ -1186,6 +1552,11 @@ async function loadRiskHistory() {
             const latestAiRisk =
                 latestWorker.aiRisk;
 
+            renderAIExtras(
+                latestAiRisk,
+                workersWithRisk
+            );
+
             const aiHeroMeta =
                 document.getElementById(
                     "ai-hero-meta"
@@ -1194,13 +1565,16 @@ async function loadRiskHistory() {
             if (aiHeroMeta) {
 
                 aiHeroMeta.innerText =
-                    latestAiRisk?.createdAt
+                    (latestAiRisk?.createdAt
                         ? `Latest analysis · ${
                             new Date(
                                 latestAiRisk.createdAt
                             ).toLocaleTimeString()
                           }`
-                        : "Latest risk engine analysis";
+                        : "Latest risk engine analysis") +
+                    (latestAiRisk?.mlRiskPrediction
+                        ? ` · AI: ${latestAiRisk.mlRiskPrediction}`
+                        : "");
             }
 
             const aiModelConfidence =
@@ -1210,11 +1584,26 @@ async function loadRiskHistory() {
 
             if (aiModelConfidence) {
 
-                aiModelConfidence.innerText =
-                    "--";
+                if (
+                    latestAiRisk?.mlConfidence != null
+                ) {
 
-                aiModelConfidence.title =
-                    "Confidence not provided by the risk API";
+                    aiModelConfidence.innerText =
+                        `${Math.round(
+                            latestAiRisk.mlConfidence * 100
+                        )}%`;
+
+                    aiModelConfidence.title =
+                        "ML model confidence from the risk API";
+
+                } else {
+
+                    aiModelConfidence.innerText =
+                        "--";
+
+                    aiModelConfidence.title =
+                        "Confidence not provided by the risk API";
+                }
             }
 
             const aiLastUpdated =
@@ -1250,6 +1639,19 @@ async function loadRiskHistory() {
                                 part.trim()
                         )
                         .filter(Boolean);
+
+                if (
+                    latestAiRisk?.anomalyDetected === true
+                ) {
+
+                    reasons.unshift(
+                        `Anomalous sensor pattern detected${
+                            latestAiRisk.anomalyScore != null
+                                ? ` (score ${latestAiRisk.anomalyScore})`
+                                : ""
+                        }`
+                    );
+                }
 
                 aiFactorsList.innerHTML =
                     reasons.length
@@ -2028,6 +2430,43 @@ document
     );
 
 
+function renderModalLiveTracking() {
+
+    const workerId =
+        document.getElementById(
+            'modal-worker-name'
+        ).innerText.split(' ')[0] +
+        ' ' +
+        document.getElementById(
+            'modal-worker-name'
+        ).innerText.split(' ')[1];
+
+    const worker =
+        appState.workers.find(
+            w => w.workerId === workerId
+        );
+
+    if (!worker) return;
+
+    const d = worker.sensorData;
+
+    const body =
+        document.getElementById('modal-worker-body');
+
+    if (!body) return;
+
+    let block =
+        body.querySelector('.live-tracking');
+
+    const html = `
+            <div class="live-tracking">
+
+                <div class="live-tracking-head">
+
+                    <strong>Live Tracking</strong>
+
+                    <span class="badge badge-info">Real-time</span>
+
             </div>
 
             <div class="detail-grid">
@@ -2132,6 +2571,182 @@ document
             html
         );
     }
+}
+
+// ==========================================================================
+// Dashboard Rendering
+// ==========================================================================
+
+// ==========================================================================
+// Core Status Helpers (restored after merge corruption)
+// ==========================================================================
+
+function evaluateStatus(worker) {
+
+    const s =
+        appState.settings;
+
+    const d =
+        worker.sensorData;
+
+    let status = 'SAFE';
+    let risk = 20;
+
+    if (
+        d.temperature_c >= s.tempCrit ||
+        d.gas_raw >= s.gasCrit ||
+        d.water_level_cm >= s.waterCrit ||
+        d.sos
+    ) {
+
+        status = 'CRITICAL';
+        risk = 90;
+
+    } else if (
+        d.temperature_c >= s.tempWarn ||
+        d.gas_raw >= s.gasWarn ||
+        d.water_level_cm >= s.waterWarn
+    ) {
+
+        status = 'WARNING';
+        risk = 60;
+    }
+
+    return {
+        status,
+        risk
+    };
+}
+
+function getBadgeClass(status) {
+
+    return status === 'SAFE'
+        ? 'badge-safe'
+        : status === 'WARNING'
+        ? 'badge-warning'
+        : 'badge-critical';
+}
+
+function getStatusColor(status) {
+
+    return status === 'SAFE'
+        ? 'text-safe'
+        : status === 'WARNING'
+        ? 'text-warning'
+        : 'text-critical';
+}
+
+// ==========================================================================
+// Activity Log
+// ==========================================================================
+
+function addLogEntry(
+    tag,
+    tagClass,
+    msg
+) {
+
+    const ts =
+        new Date();
+
+    appState.activityLog.unshift({
+
+        ts,
+        tag,
+        tagClass,
+        msg
+    });
+
+    if (
+        appState.activityLog.length >
+        200
+    ) {
+        appState.activityLog.length =
+            200;
+    }
+
+    appState.logSeq++;
+
+    renderActivityLog();
+}
+
+function renderActivityLog() {
+
+    const container =
+        document.getElementById(
+            'activity-log-container'
+        );
+
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    appState.activityLog.forEach(
+        e => {
+
+            const ts =
+                e.ts.toLocaleTimeString();
+
+            const div =
+                document.createElement(
+                    'div'
+                );
+
+            div.className =
+                'log-entry';
+
+            div.innerHTML = `
+                <span class="log-ts">
+                    ${ts}
+                </span>
+
+                <span class="log-msg">
+
+                    <span
+                        class="log-tag ${e.tagClass}"
+                    >
+                        ${e.tag}
+                    </span>
+
+                    ${e.msg}
+
+                </span>
+            `;
+
+            container.appendChild(
+                div
+            );
+        }
+    );
+
+    const countEl =
+        document.getElementById(
+            'activity-log-count'
+        );
+
+    if (countEl) {
+
+        countEl.innerText =
+            appState.activityLog.length +
+            ' entries';
+    }
+}
+
+function logAlertAsEvent(
+    alert
+) {
+
+    if (
+        !appState.settings.logAlerts
+    ) {
+        return;
+    }
+
+    addLogEntry(
+        'ALERT',
+        'tag-alert',
+        `${alert.type}: ${alert.msg} (Worker ${alert.worker}, Belt ${alert.belt})`
+    );
 }
 
 // ==========================================================================
@@ -2789,7 +3404,7 @@ function renderAlerts() {
             };
 
             const lowerType =
-                alert.type.toLowerCase();
+                (alert.type || 'INFO').toLowerCase();
 
             const aiHtml =
                 alert.aiAction
@@ -3462,6 +4077,167 @@ function initCharts() {
 }
 
 // ==========================================================================
+// ==========================================================================
+// Chart Refresh (in place, no re-create)
+// ==========================================================================
+
+function refreshCharts() {
+
+    // Nothing to do until the analytics charts have been initialised.
+    if (
+        !appState.charts.temp &&
+        !appState.charts.gas &&
+        !appState.charts.water &&
+        !appState.charts.risk
+    ) {
+        return;
+    }
+
+    const allReadings =
+        appState.workers
+            .flatMap(
+                worker =>
+                    worker.sensorHistory ||
+                    []
+            )
+            .filter(
+                reading =>
+                    reading.recorded_at
+            )
+            .sort(
+                (a, b) =>
+                    new Date(
+                        a.recorded_at
+                    ) -
+                    new Date(
+                        b.recorded_at
+                    )
+            );
+
+    const tenMinutesAgo =
+        Date.now() -
+        (
+            10 *
+            60 *
+            1000
+        );
+
+    let readings =
+        allReadings.filter(
+            reading =>
+                new Date(
+                    reading.recorded_at
+                ).getTime() >=
+                tenMinutesAgo
+        );
+
+    if (
+        readings.length < 2
+    ) {
+
+        readings =
+            allReadings.slice(-6);
+    }
+
+    const labels =
+        readings.map(
+            reading =>
+                new Date(
+                    reading.recorded_at
+                ).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                })
+        );
+
+    const riskReadings =
+        appState.riskHistory
+            .filter(
+                risk =>
+                    risk.created_at
+            )
+            .sort(
+                (a, b) =>
+                    new Date(
+                        a.created_at
+                    ) -
+                    new Date(
+                        b.created_at
+                    )
+            )
+            .slice(-6);
+
+    const riskLabels =
+        riskReadings.map(
+            risk =>
+                new Date(
+                    risk.created_at
+                ).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                })
+        );
+
+    const updateChart =
+        (
+            chart,
+            chartLabels,
+            data
+        ) => {
+
+            if (!chart) return;
+
+            chart.data.labels =
+                chartLabels;
+
+            chart.data.datasets[0].data =
+                data;
+
+            chart.update();
+        };
+
+    updateChart(
+        appState.charts.risk,
+        riskLabels,
+        riskReadings.map(
+            r =>
+                r.risk_score ??
+                0
+        )
+    );
+
+    updateChart(
+        appState.charts.temp,
+        labels,
+        readings.map(
+            r =>
+                r.temperature_c ??
+                0
+        )
+    );
+
+    updateChart(
+        appState.charts.gas,
+        labels,
+        readings.map(
+            r =>
+                r.gas_raw ??
+                0
+        )
+    );
+
+    updateChart(
+        appState.charts.water,
+        labels,
+        readings.map(
+            r =>
+                r.water_level_cm ??
+                0
+        )
+    );
+}
+
+// ==========================================================================
 // DOM Ready
 // ==========================================================================
 
@@ -3515,21 +4291,6 @@ document.addEventListener(
     }
 );
 
-
-    if (
-        appState.auth.authenticated &&
-        appState.auth.username
-    ) {
-
-        el.innerText =
-            appState.auth.username;
-
-    } else {
-
-        el.innerText =
-            'Operator';
-    }
-}
 
    function updateOperatorDisplay() {
        const el = document.getElementById('operator-display');

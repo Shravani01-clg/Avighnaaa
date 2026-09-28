@@ -468,9 +468,13 @@
 
                                 <div class="ai-hero-side">
 
+                                    <span class="ai-source-badge" id="ai-source-badge" data-source="unknown">AI status unknown</span>
+
                                     <span class="risk-pill" id="ai-state-pill" data-level="none">
                                         NO DATA
                                     </span>
+
+                                    <span class="ai-ml-chip is-hidden" id="ai-ml-chip"></span>
 
                                     <div class="ai-hero-meta" id="ai-hero-meta">
                                         Waiting for AI analysis&hellip;
@@ -479,6 +483,25 @@
                                 </div>
 
                             </div>
+
+
+                            <!-- AI RECOMMENDATION (directly below risk level) -->
+                            <div
+                                class="ai-recommendation-inline is-hidden"
+                                id="ai-recommendation-inline"
+                            ></div>
+
+
+                            <!-- AI WARNINGS: frozen sensor + trend -->
+                            <div
+                                class="ai-warning ai-warning-stuck is-hidden"
+                                id="ai-stuck-warning"
+                            ></div>
+
+                            <div
+                                class="ai-warning ai-warning-trend is-hidden"
+                                id="ai-trend-warning"
+                            ></div>
 
 
                             <!-- AI SECONDARY SCORES -->
@@ -551,6 +574,16 @@
                                     </li>
 
                                 </ul>
+
+                            </div>
+
+
+                            <!-- WHY THIS SCORE -->
+                            <div class="ai-why is-hidden" id="ai-why">
+
+                                <h4>Why this score?</h4>
+
+                                <ul id="ai-why-list"></ul>
 
                             </div>
 

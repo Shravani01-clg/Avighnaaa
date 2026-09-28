@@ -1,3 +1,4 @@
+
 const store = require("../config/dataStore");
 const { calculateRisk } = require("./riskEngine");
 const { getAIAnalysis } = require("./aiIntegration");
@@ -106,16 +107,11 @@ const receiveSensorData = async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message:
-          "Valid device_id is required",
+        message: "Valid device_id is required",
       });
     }
 
     // ── MPU6050 validation ──────────────────────────────────
-    //
-    // MPU6050 is currently the only physical sensor.
-    // Therefore X, Y and Z acceleration are required.
-    //
 
     const mpuFields = {
       acceleration_x_ms2,
@@ -135,17 +131,12 @@ const receiveSensorData = async (req, res) => {
       ) {
         return res.status(400).json({
           success: false,
-          message:
-            `${field} must be a valid number`,
+          message: `${field} must be a valid number`,
         });
       }
     }
 
     // ── Optional sensor validation ──────────────────────────
-    //
-    // These sensors are NOT currently connected.
-    // If values are supplied later, validate them.
-    //
 
     if (
       temperature_c !== undefined &&
@@ -181,8 +172,7 @@ const receiveSensorData = async (req, res) => {
       if (gas_raw < 0) {
         return res.status(400).json({
           success: false,
-          message:
-            "gas_raw cannot be negative",
+          message: "gas_raw cannot be negative",
         });
       }
     }
@@ -205,8 +195,7 @@ const receiveSensorData = async (req, res) => {
       if (water_level_cm < 0) {
         return res.status(400).json({
           success: false,
-          message:
-            "water_level_cm cannot be negative",
+          message: "water_level_cm cannot be negative",
         });
       }
     }
@@ -219,9 +208,7 @@ const receiveSensorData = async (req, res) => {
     ) {
       if (
         typeof battery_level_percent !== "number" ||
-        !Number.isFinite(
-          battery_level_percent
-        )
+        !Number.isFinite(battery_level_percent)
       ) {
         return res.status(400).json({
           success: false,
@@ -250,21 +237,17 @@ const receiveSensorData = async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message:
-          "sos must be true or false",
+        message: "sos must be true or false",
       });
     }
 
     // ── Timestamp validation ────────────────────────────────
 
     if (timestamp !== undefined) {
-      const parsedTimestamp =
-        new Date(timestamp);
+      const parsedTimestamp = new Date(timestamp);
 
       if (
-        Number.isNaN(
-          parsedTimestamp.getTime()
-        )
+        Number.isNaN(parsedTimestamp.getTime())
       ) {
         return res.status(400).json({
           success: false,
@@ -274,18 +257,16 @@ const receiveSensorData = async (req, res) => {
       }
     }
 
-    // ── Calculate risk ──────────────────────────────────────
+    // ── Calculate rule-based risk ───────────────────────────
 
-    const ruleBasedRisk =
-      calculateRisk(req.body);
+    const ruleBasedRisk = calculateRisk(req.body);
 
     // ── Get AI analysis ─────────────────────────────────────
 
-    const aiResult =
-      await getAIAnalysis(
-        req.body,
-        ruleBasedRisk
-      );
+    const aiResult = await getAIAnalysis(
+      req.body,
+      ruleBasedRisk
+    );
 
     // Final risk: AI never downgrades, only upgrades
     const risk = {
@@ -301,8 +282,7 @@ const receiveSensorData = async (req, res) => {
         ruleBasedRisk.anomaly_detected ||
         (
           aiResult.aiAnalysis
-            ? aiResult.aiAnalysis
-                .anomalyDetected === true
+            ? aiResult.aiAnalysis.anomalyDetected === true
             : false
         ),
 
@@ -326,85 +306,78 @@ const receiveSensorData = async (req, res) => {
     };
 
     // ── Store sensor reading ────────────────────────────────
-    //
-    // Only MPU6050 values are currently real.
-    // Other sensor values are stored as NULL.
-    //
+    // Only real readings supplied by the device are processed.
 
-    const data =
-      await store.insert(
-        "sensor_readings",
-        {
-          device_id,
+    const data = await store.insert(
+      "sensor_readings",
+      {
+        device_id,
 
-          temperature_c:
-            temperature_c ?? null,
+        temperature_c:
+          temperature_c ?? null,
 
-          gas_raw:
-            gas_raw ?? null,
+        gas_raw:
+          gas_raw ?? null,
 
-          water_level_cm:
-            water_level_cm ?? null,
+        water_level_cm:
+          water_level_cm ?? null,
 
-          acceleration_x_ms2,
+        acceleration_x_ms2,
 
-          acceleration_y_ms2,
+        acceleration_y_ms2,
 
-          acceleration_z_ms2,
+        acceleration_z_ms2,
 
-          battery_level_percent:
-            battery_level_percent ?? null,
+        battery_level_percent:
+          battery_level_percent ?? null,
 
-          sos:
-            sos ?? false,
+        sos:
+          sos ?? false,
 
-          recorded_at:
-            timestamp ||
-            new Date().toISOString(),
-        }
-      );
+        recorded_at:
+          timestamp || new Date().toISOString(),
+      }
+    );
 
-    const record =
-      Array.isArray(data)
-        ? data[0]
-        : data;
+    const record = Array.isArray(data)
+      ? data[0]
+      : data;
 
-    // ── Store risk prediction ──────────────────────────────
+    // ── Store risk prediction ───────────────────────────────
+    // NEW: Persist the AI analysis alongside the risk result.
 
-    const riskData =
-      await store.insert(
-        "risk_predictions",
-        {
-          device_id,
+    const riskData = await store.insert(
+      "risk_predictions",
+      {
+        device_id,
 
-          risk_score:
-            risk.risk_score,
+        risk_score:
+          risk.risk_score,
 
-          risk_level:
-            risk.risk_level,
+        risk_level:
+          risk.risk_level,
 
-          reason:
-            risk.reason,
+        reason:
+          risk.reason,
 
-          anomaly_detected:
-            risk.anomaly_detected,
+        anomaly_detected:
+          risk.anomaly_detected,
 
-          fall_state:
-            risk.fall_state,
-        }
-      );
+        fall_state:
+          risk.fall_state,
 
-    const riskRecord =
-      Array.isArray(riskData)
-        ? riskData[0]
-        : riskData;
+        ai:
+          risk.ai || null,
+      }
+    );
+
+    const riskRecord = Array.isArray(riskData)
+      ? riskData[0]
+      : riskData;
 
     // ── Create alerts ───────────────────────────────────────
 
-    for (
-      const alertType
-      of risk.alerts
-    ) {
+    for (const alertType of risk.alerts) {
       await createAlertIfNew(
         device_id,
         alertType,
@@ -443,7 +416,6 @@ const receiveSensorData = async (req, res) => {
     });
 
   } catch (err) {
-
     console.error(
       "❌ Sensor data processing error:",
       err
@@ -451,65 +423,48 @@ const receiveSensorData = async (req, res) => {
 
     res.status(500).json({
       success: false,
-      message:
-        "Server error",
-      error:
-        err.message,
+      message: "Server error",
+      error: err.message,
     });
   }
 };
 
 // GET /api/sensor-data/:deviceId
-const getSensorData =
-  async (req, res) => {
+const getSensorData = async (req, res) => {
+  try {
+    const { deviceId } = req.params;
 
-    try {
+    const data = await store.select(
+      "sensor_readings",
+      {
+        filters: {
+          device_id: deviceId,
+        },
 
-      const {
-        deviceId
-      } = req.params;
+        orderBy: "recorded_at",
 
-      const data =
-        await store.select(
-          "sensor_readings",
-          {
-            filters: {
-              device_id:
-                deviceId,
-            },
+        limit: 50,
+      }
+    );
 
-            orderBy:
-              "recorded_at",
+    res.json({
+      success: true,
 
-            limit: 50,
-          }
-        );
+      device_id: deviceId,
 
-      res.json({
-        success: true,
+      count: data.length,
 
-        device_id:
-          deviceId,
+      data,
+    });
 
-        count:
-          data.length,
-
-        data,
-      });
-
-    } catch (err) {
-
-      res.status(500).json({
-        success: false,
-
-        message:
-          "Server error",
-
-        error:
-          err.message,
-      });
-    }
-  };
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: err.message,
+    });
+  }
+};
 
 module.exports = {
   receiveSensorData,
