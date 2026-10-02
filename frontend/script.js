@@ -877,10 +877,7 @@ async function loadRiskFromBackend() {
                 continue;
             }
 
-            const latestRisk =
-                result.data[
-                    result.data.length - 1
-                ];
+            const latestRisk = result.data[0];
 
             worker.aiRisk = {
 
@@ -993,10 +990,7 @@ async function loadRiskHistory() {
                 ...result.data
             );
 
-            const latestRisk =
-                result.data[
-                    result.data.length - 1
-                ];
+            const latestRisk = result.data[0];
 
             worker.aiRisk = {
 
@@ -1167,10 +1161,7 @@ async function loadRiskHistory() {
                 overallLevel
             );
 
-            const latestWorker =
-                workersWithRisk[
-                    workersWithRisk.length - 1
-                ];
+            const latestWorker = workersWithRisk[0];
 
             if (
                 aiRecommendation &&
