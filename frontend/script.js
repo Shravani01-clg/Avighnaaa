@@ -11,9 +11,10 @@
 
 lucide.createIcons();
 
+// Must match PORT in .env (5002). Change both together if you move the port.
 const API_BASE_URL = "http://localhost:5002/api";
-const SUPABASE_URL = "https://qsymativfurrwguffwvc.supabase.co";
-const SUPABASE_KEY = "sb_publishable_NBqLNkIQT-nxb7rfvJFJ0Q_Pyu6wsCg";
+const SUPABASE_URL = "https://iuiytpsnvrsshmygfrny.supabase.co";
+const SUPABASE_KEY = "sb_publishable_CkG8WbV7G8Qgbq9XIr_ocA_jTW5nFc-";
 
 const supabaseClient = supabase.createClient(
     SUPABASE_URL,
@@ -807,7 +808,7 @@ async function testBackendConnection() {
     try {
 
         const response =
-            await fetch("http://localhost:5002/");
+            await fetch(API_BASE_URL.replace(/\/api$/, "/"));
 
         if (response.ok) {
             console.log(
@@ -1748,6 +1749,10 @@ const appState = {
 // Authentication
 // ==========================================================================
 
+// ==========================================================================
+// Authentication
+// ==========================================================================
+
 function setAuthenticated(user) {
 
     appState.auth.username =
@@ -1784,6 +1789,11 @@ function setAuthenticated(user) {
         'tag-status',
         `User "${user}" signed in to the control room`
     );
+
+    // Rescue layer hook: resolve role backend-side and route to portal
+    if (window.onAvighnaaLogin) {
+        window.onAvighnaaLogin(user);
+    }
 }
 
 function signOut() {
@@ -1822,6 +1832,10 @@ function signOut() {
         'tag-status',
         'Control room session ended'
     );
+
+    if (window.onAvighnaaLogout) {
+        window.onAvighnaaLogout();
+    }
 
     updateOperatorDisplay();
 }
@@ -1932,8 +1946,214 @@ window.handleLoginSubmit =
         }
     };
 
-window.signOut =
-    signOut;
+// ─── Rescue layer: session + role resolution ───────────────────
+// Single source of truth. rescue.js listens for the
+// 'avighnaa:session' / 'avighnaa:logout' events instead of
+// redefining these hooks (two definitions silently fought before).
+window.avighnaaRole = null;   // 'user' | 'rescue_team'
+window.avighnaaTeam = null;   // e.g. 'RT-01'
+window.avighnaaEmail = null;
+
+// Which portal the user picked on the login screen. The REAL role always
+// wins — this only lets us tell someone "this account is not a rescue
+// account" instead of silently dropping them somewhere unexpected.
+window.avighnaaLoginIntent = 'user';
+
+// AVIGHNAA has exactly two portals. There is no admin role.
+const LOGIN_INTENT_COPY = {
+    user: {
+        title: 'User Login',
+        sub: 'Sign in to access the control-room dashboard and request rescue when an emergency is detected.',
+    },
+    rescue_team: {
+        title: 'Rescue Team Access',
+        sub: 'Sign in with your rescue-team account. Role is verified on the server.',
+    },
+};
+
+/**
+ * Wire the USER / ADMIN / RESCUE TEAM buttons on the login overlay.
+ * Selecting one only changes the wording — authentication and the final
+ * portal are always decided by the server-verified role.
+ */
+function setupLoginRoleButtons() {
+    const note = document.getElementById('login-role-note');
+    const title = document.querySelector('.login-title');
+    const sub = document.querySelector('.login-sub');
+
+    document.querySelectorAll('[data-login-role]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const intent = btn.getAttribute('data-login-role');
+            window.avighnaaLoginIntent = intent;
+
+            document.querySelectorAll('[data-login-role]').forEach((b) =>
+                b.classList.toggle('active', b === btn)
+            );
+
+            const copy = LOGIN_INTENT_COPY[intent];
+            if (copy) {
+                if (title) title.textContent = copy.title;
+                if (sub) sub.innerHTML = copy.sub;
+            }
+            if (note) {
+                note.textContent =
+                    intent === 'rescue_team'
+                        ? 'Emergency response portal — role verified on the server.'
+                        : 'You will only reach the portal matching your account role.';
+            }
+        });
+    });
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupLoginRoleButtons);
+} else {
+    setupLoginRoleButtons();
+}
+
+// Which roles may open which page. Pages not listed are open to everyone.
+// This is UI-side defence only — every sensitive endpoint is also
+// enforced server-side by requireRole() in routes/*Routes.js.
+const AVIGHNAA_ROLE_RULES = {
+    // Control-room pages (USER)
+    dashboard:   ['user'],
+    workers:     ['user'],
+    alerts:      ['user'],
+    analytics:   ['user'],
+    settings:    ['user'],
+    // Rescue pages (RESCUE_TEAM)
+    rescue:        ['rescue_team'],
+    rescuecontrol: ['rescue_team'],
+    history:       ['rescue_team'],
+    equipment:     ['rescue_team'],
+    equipmentcheck: ['rescue_team'],
+};
+
+// Page each role lands on after login.
+const AVIGHNAA_HOME_PAGE = {
+    user: 'dashboard',
+    rescue_team: 'rescue',
+};
+
+window.rescueCanOpen = function (target) {
+    if (!appState.auth.authenticated) return false;
+    const allowed = AVIGHNAA_ROLE_RULES[target];
+    if (!allowed) return true;                    // page has no role requirement
+    if (!window.avighnaaRole) return true;        // role not resolved yet - don't lock out
+    return allowed.includes(window.avighnaaRole);
+};
+
+function announceRescueSession(detail) {
+    window.dispatchEvent(new CustomEvent('avighnaa:session', { detail: detail }));
+}
+
+window.onAvighnaaLogin = async function (userEmail) {
+    const goTo = (target, title) => {
+        const link = document.querySelector(`[data-target="${target}"]`);
+        if (link) link.click();
+        const titleEl = document.getElementById('page-title');
+        // If the nav click was blocked by the role guard, fix the title anyway.
+        if (titleEl && !link?.classList.contains('active')) {
+            titleEl.innerText = title;
+        }
+    };
+
+    // getSession() is ASYNC - reading `.data.session` off the returned
+    // Promise always gave undefined, so every login fell back to Dashboard.
+    let token = null;
+    try {
+        const { data } = await supabaseClient.auth.getSession();
+        token = data?.session?.access_token ?? null;
+    } catch (err) {
+        console.error('❌ Could not read session:', err);
+    }
+
+    if (!token) {
+        window.avighnaaRole = null;
+        window.avighnaaTeam = null;
+        announceRescueSession({ role: null, teamId: null, email: userEmail || null });
+        goTo('dashboard', 'Dashboard');
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API_BASE_URL}/auth/me`, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        const payload = await res.json();
+
+        // The endpoint replies { success, data: { role, team_id, ... } }.
+        // Accept either shape so a backend change can't silently break routing.
+        const me = (payload && typeof payload.data === 'object' && payload.data)
+            ? payload.data
+            : (payload || {});
+
+        const role = me.role || 'user';
+
+        // Role separation: if the user picked a portal that does not match
+        // their real role, refuse the session instead of silently redirecting
+        // them somewhere they did not ask for (and did not have access to).
+        const intent = window.avighnaaLoginIntent;
+        if (intent && intent !== role) {
+            const label = LOGIN_INTENT_COPY[intent] ? intent : 'that';
+            console.warn(`⛔ Login intent "${intent}" does not match real role "${role}"`);
+            try {
+                await supabaseClient.auth.signOut();
+            } catch { /* ignore */ }
+            window.avighnaaRole = null;
+            window.avighnaaTeam = null;
+            window.avighnaaLoginIntent = 'user';
+            const errEl = document.getElementById('login-error');
+            if (errEl) {
+                errEl.textContent =
+                    `This account is not authorised for the ${label} portal ` +
+                    `(its role is "${role}"). Please use the correct login.`;
+                errEl.classList.remove('hidden');
+            }
+            if (typeof signOut === 'function') signOut();
+            return;
+        }
+
+        window.avighnaaRole = role;
+        window.avighnaaTeam = me.team_id || me.teamId || null;
+        window.avighnaaEmail = me.email || userEmail || null;
+
+        announceRescueSession({
+            role: role,
+            teamId: window.avighnaaTeam,
+            email: window.avighnaaEmail
+        });
+
+        const home = AVIGHNAA_HOME_PAGE[role] || 'dashboard';
+
+        if (role === 'rescue_team') {
+            goTo('rescue', 'Rescue Team Portal');
+            addLogEntry('STATUS', 'tag-status',
+                `Rescue Team role active for ${window.avighnaaEmail} (team ${window.avighnaaTeam || 'unassigned'})`);
+        } else {
+            goTo(home, 'Dashboard');
+            addLogEntry('STATUS', 'tag-status',
+                `Signed in as control-room user ${window.avighnaaEmail}`);
+        }
+    } catch (err) {
+        console.error('❌ Failed to resolve role:', err);
+        window.avighnaaRole = null;
+        announceRescueSession({ role: null, teamId: null, email: userEmail || null });
+        goTo('dashboard', 'Dashboard');
+    }
+};
+
+window.onAvighnaaLogout = function () {
+    window.avighnaaRole = null;
+    window.avighnaaTeam = null;
+    window.avighnaaEmail = null;
+    window.dispatchEvent(new CustomEvent('avighnaa:logout'));
+};
+
+// ==========================================================================
+// Navigation
+// ==========================================================================
+    
 
 // ==========================================================================
 // Navigation
@@ -1948,6 +2168,17 @@ document
             e => {
 
                 e.preventDefault();
+
+                // Rescue layer guard: block role-restricted pages early
+                const guardTarget =
+                    e.currentTarget.getAttribute('data-target');
+
+                if (
+                    window.rescueCanOpen &&
+                    !window.rescueCanOpen(guardTarget)
+                ) {
+                    return;
+                }
 
                 document
                     .querySelectorAll(
@@ -2003,7 +2234,22 @@ document
                         'Sensor Analytics',
 
                     settings:
-                        'System Settings'
+                        'System Settings',
+
+                    rescue:
+                        'Rescue Team Portal',
+
+                    history:
+                        'Rescue History & Analytics',
+
+                    rescuecontrol:
+                        'Rescue Control',
+
+                    equipment:
+                        'Rescue Equipment',
+
+                    equipmentcheck:
+                        'Pre-Departure Equipment Check'
                 };
 
                 document.getElementById(

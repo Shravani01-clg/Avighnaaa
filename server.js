@@ -3,10 +3,15 @@ const workerRoutes = require("./routes/workerRoutes");
 const deviceRoutes = require("./routes/deviceRoutes");
 const alertRoutes = require("./routes/alertRoutes");
 const riskRoutes = require("./routes/riskRoutes");
+const authRoutes = require("./routes/authRoutes");
+const incidentRoutes = require("./routes/incidentRoutes");
+const rescueRoutes = require("./routes/rescueRoutes");
+const equipmentRoutes = require("./routes/equipmentRoutes");
 const express = require("express");
 const cors = require("cors");
 const supabase = require("./config/supabase");
 const sensorRoutes = require("./routes/sensorRoutes");
+const { startEscalationScheduler } = require("./controllers/incidentController");
 
 const app = express();
 
@@ -27,6 +32,12 @@ app.use("/api", workerRoutes);
 app.use("/api", deviceRoutes);
 app.use("/api", alertRoutes);
 app.use("/api", riskRoutes);
+
+// Rescue response layer (extends the existing API — nothing replaced)
+app.use("/api", authRoutes);
+app.use("/api", incidentRoutes);
+app.use("/api", rescueRoutes);
+app.use("/api", equipmentRoutes);
 // Temporary Supabase connection test
 app.get("/test-supabase", async (req, res) => {
   const { data, error } = await supabase
@@ -49,8 +60,26 @@ app.get("/test-supabase", async (req, res) => {
 });
 
 // Start server
-const PORT = process.env.PORT || 5000;
+// Default 5002 to match .env / .env.example and API_BASE_URL in
+// frontend/script.js. Keep all four in sync if you change the port.
+// NOTE: PORT is validated numerically because a string "0" is truthy —
+// `process.env.PORT || 5002` would happily bind to port 0 (random port)
+// and the frontend would never find the backend.
+const parsedPort = Number.parseInt(process.env.PORT, 10);
+const PORT =
+  Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort < 65536
+    ? parsedPort
+    : 5002;
+if (process.env.PORT && String(PORT) !== String(process.env.PORT)) {
+  console.warn(
+    `⚠️  PORT=${JSON.stringify(process.env.PORT)} is not a valid port - using ${PORT}`
+  );
+}
 
 app.listen(PORT, () => {
   console.log(`RockFall backend running on http://localhost:${PORT}`);
+
+  // Rescue layer: escalation scheduler (checks every tick for
+  // unacknowledged incidents past RESPONSE_TIMEOUT_MINUTES)
+  startEscalationScheduler();
 });

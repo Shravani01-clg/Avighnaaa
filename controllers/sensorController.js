@@ -2,6 +2,7 @@
 const store = require("../config/dataStore");
 const { calculateRisk } = require("./riskEngine");
 const { getAIAnalysis } = require("./aiIntegration");
+const { createIncidentFromAlert } = require("./incidentController");
 
 // ─── Alert Type → Severity Map ──────────────────────────────
 
@@ -55,7 +56,7 @@ async function createAlertIfNew(
       limit: 1,
     });
 
-    if (existing.length > 0) return;
+    if (existing.length > 0) return existing[0].id;
 
     const severity =
       ALERT_SEVERITY[alertType] || "MEDIUM";
@@ -68,13 +69,15 @@ async function createAlertIfNew(
       ? `${baseMessage}: ${extraMessage}`
       : baseMessage;
 
-    await store.insert("alerts", {
+    const created = await store.insert("alerts", {
       device_id,
       alert_type: alertType,
       severity,
       message,
       is_resolved: false,
     });
+
+    return Array.isArray(created) && created[0] ? created[0].id : null;
   } catch (err) {
     console.error(
       `Alert creation failed for ${alertType}:`,
@@ -377,12 +380,75 @@ const receiveSensorData = async (req, res) => {
 
     // ── Create alerts ───────────────────────────────────────
 
+    const createdAlertIds = {};
+
     for (const alertType of risk.alerts) {
-      await createAlertIfNew(
+      const typeId =
+        typeof alertType === "string"
+          ? alertType
+          : alertType && alertType.type;
+
+      if (!typeId) continue;
+
+      const alertId = await createAlertIfNew(
         device_id,
-        alertType,
+        typeId,
         risk.reason
       );
+
+      createdAlertIds[typeId] = alertId;
+    }
+
+    // ── Rescue layer: incident creation from serious alerts ──
+    // Runs AFTER the existing alert flow and can never break it.
+    // ONE incident per reading: the highest-priority hazard wins
+    // (COMBINED > SOS > GAS > TEMP > FLOOD > FALL > others), so a
+    // single critical reading does not open 5 parallel cases.
+    // Deduplication lives inside createIncidentFromAlert.
+
+    const HAZARD_PRIORITY = {
+      COMBINED_DANGER: 100,
+      SOS: 90,
+      GAS_DANGER: 80,
+      TEMP_DANGER: 70,
+      FALL_DETECTED: 65,
+      FLOOD_DANGER: 60,
+      POSSIBLE_FALL: 50,
+      HIGH_RISK: 20,
+      ANOMALY: 10,
+    };
+
+    let bestEntry = null;
+    let bestPriority = -1;
+
+    for (const alertEntry of risk.alerts) {
+      const typeId =
+        typeof alertEntry === "string"
+          ? alertEntry
+          : alertEntry && alertEntry.type;
+
+      if (!typeId) continue;
+
+      const severity =
+        (typeof alertEntry === "object" && alertEntry.severity) ||
+        ALERT_SEVERITY[typeId] ||
+        "MEDIUM";
+
+      const priority = HAZARD_PRIORITY[typeId] || 0;
+      if (priority > bestPriority) {
+        bestPriority = priority;
+        bestEntry = { typeId, severity };
+      }
+    }
+
+    if (bestEntry) {
+      await createIncidentFromAlert({
+        device_id,
+        alertType: bestEntry.typeId,
+        severity: bestEntry.severity,
+        alertId: createdAlertIds[bestEntry.typeId] || null,
+        risk: { ...risk, sos: req.body.sos === true },
+      });
     }
 
     // ── API response ────────────────────────────────────────
