@@ -9,12 +9,20 @@
  *   3. Detects falls with the full state progression
  *   4. Generates risk predictions mapped to LOW / MEDIUM / HIGH / CRITICAL
  *   5. Always provides the consistent output contract for Person 1's backend
+ *   6. Alert stability: instant escalation, delayed de-escalation (no level
+ *      flapping), per-device isolation, AI-alert cooldown, and a rescue
+ *      recommendation on every response
+ *   7. Sequence intelligence (Day 2): stuck-sensor detection over a
+ *      rolling window, pre-threshold trend warnings, explainable
+ *      risk_factors, and recommendation coverage for both
  *
  * Exit code 0 = Phase 3 gate passed.
  */
 
 const { analyzeRisk, reset, detectAnomaly } = require("./index");
 const { FALL_STATES } = require("./fallDetection");
+const { STUCK_WINDOW } = require("./rollingWindow");
+const { shouldEmitAlert, resetAlertCooldown } = require("../controllers/aiIntegration");
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -130,10 +138,14 @@ check("Contract fields present on every response (incl. invalid input)", () => {
       ["LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(r.risk_level) &&
       typeof r.anomaly_detected === "boolean" &&
       typeof r.fall_state === "string" &&
-      typeof r.reason === "string" && r.reason.length > 0;
+      typeof r.reason === "string" && r.reason.length > 0 &&
+      typeof r.recommendation === "string" && r.recommendation.length > 0 &&
+      Array.isArray(r.stuck_sensors) &&
+      Array.isArray(r.trend_warnings) &&
+      Array.isArray(r.risk_factors) && r.risk_factors.length > 0;
     if (!hasAll) return { ok: false, info: `Failed for input: ${JSON.stringify(data)}` };
   }
-  return { ok: true, info: "risk_score, risk_level, anomaly_detected, fall_state, reason present in all cases" };
+  return { ok: true, info: "risk_score, risk_level, anomaly_detected, fall_state, reason, recommendation, stuck_sensors, trend_warnings, risk_factors present in all cases" };
 });
 
 check("Invalid input → safe defaults (LOW, no anomaly)", () => {
@@ -281,6 +293,221 @@ check("Hazard readings are NOT anomalies (hot/gas/wet = known danger)", () => {
     if (a.anomalyDetected) return { ok: false, info: `Hazard flagged as anomaly: ${a.anomalyReasons.join(", ")}` };
   }
   return { ok: true, info: "Hazards scored as danger, not anomaly" };
+});
+
+// ─── 5. Alert stability — hysteresis, cooldown, recommendation ──
+
+console.log("═══════════════════════════════════════════════════");
+console.log("  5️⃣  Alert stability — no flapping, cooldown, advice");
+console.log("═══════════════════════════════════════════════════\n");
+
+check("Escalation is immediate (danger never waits)", () => {
+  analyzeRisk(BASE); // establish a LOW baseline
+  const r = analyzeRisk({ ...BASE, gas_raw: 700 });
+  return {
+    ok: ["MEDIUM", "HIGH", "CRITICAL"].includes(r.risk_level),
+    info: `baseline LOW → gas 700 → ${r.risk_level} (${r.risk_score})`,
+  };
+});
+
+check("De-escalation held for 3 stable readings (no level flapping)", () => {
+  const danger = analyzeRisk({ ...BASE, gas_raw: 700 }); // establish MEDIUM
+  const r1 = analyzeRisk(BASE);                          // hold 1/3
+  const r2 = analyzeRisk(BASE);                          // hold 2/3
+  const r3 = analyzeRisk(BASE);                          // hold 3/3 → stand down
+  const ok =
+    danger.risk_level === "MEDIUM" &&
+    r1.risk_level === "MEDIUM" && r1.risk_score === danger.risk_score &&
+    r2.risk_level === "MEDIUM" &&
+    r3.risk_level === "LOW";
+  return {
+    ok,
+    info:
+      `${danger.risk_level}(${danger.risk_score}) → ` +
+      `${r1.risk_level}(${r1.risk_score}, hold 1) → ` +
+      `${r2.risk_level}(hold 2) → ${r3.risk_level}(stand down)`,
+  };
+});
+
+check("Hysteresis state is isolated per device", () => {
+  analyzeRisk({ ...BASE, device_id: "STAB-A", gas_raw: 700 }); // A in danger
+  const b = analyzeRisk({ ...BASE, device_id: "STAB-B" });      // B normal → LOW
+  const a = analyzeRisk({ ...BASE, device_id: "STAB-A" });      // A still holding
+  return {
+    ok: b.risk_level === "LOW" && a.risk_level === "MEDIUM",
+    info: `B=${b.risk_level} (clean, unaffected) | A=${a.risk_level} (still held)`,
+  };
+});
+
+check("AI alert cooldown — fires once per device, window respected", () => {
+  resetAlertCooldown();
+  const first = shouldEmitAlert("ANOMALY", "COOL-1", 1_000_000);
+  const within = shouldEmitAlert("ANOMALY", "COOL-1", 1_010_000); // 10s later → suppressed
+  const after = shouldEmitAlert("ANOMALY", "COOL-1", 1_040_000);  // 40s later → allowed
+  const otherDevice = shouldEmitAlert("ANOMALY", "COOL-2", 1_010_000); // other device → allowed
+  const ok = first === true && within === false && after === true && otherDevice === true;
+  return {
+    ok,
+    info: `first=${first} within10s=${within} after40s=${after} otherDevice=${otherDevice}`,
+  };
+});
+
+check("Rescue recommendation present & level-appropriate", () => {
+  const low = analyzeRisk(BASE);
+  const crit = analyzeRisk({ ...BASE, temperature_c: 48, gas_raw: 650, water_level_cm: 28, sos: true });
+  const ok =
+    typeof low.recommendation === "string" && low.recommendation.length > 0 &&
+    typeof crit.recommendation === "string" && /evacuat|rescue/i.test(crit.recommendation);
+  return {
+    ok,
+    info: `LOW→"${low.recommendation}" | CRITICAL→"${crit.recommendation.slice(0, 72)}…"`,
+  };
+});
+
+// ─── 6. Sequence intelligence — stuck sensor & trends (Day 2) ──
+
+console.log("═══════════════════════════════════════════════════");
+console.log("  6️⃣  Sequence intelligence — stuck sensor & trends");
+console.log("═══════════════════════════════════════════════════\n");
+
+check("Stuck sensor detected after window of identical readings", () => {
+  let last = null;
+  for (let i = 0; i < STUCK_WINDOW; i++) {
+    last = analyzeRisk({ ...BASE, device_id: "STUCK-1" });
+  }
+  const ok =
+    last.stuck_sensors.includes("temperature_c") &&
+    last.stuck_sensors.includes("gas_raw") &&
+    last.stuck_sensors.includes("water_level_cm") &&
+    last.anomaly_detected === true &&
+    last.reason.includes("Stuck sensor");
+  return {
+    ok,
+    info: `stuck=[${last.stuck_sensors.join(", ")}] anomaly=${last.anomaly_detected}`,
+  };
+});
+
+check("No stuck false-positive on jittered readings", () => {
+  let last = null;
+  for (let i = 0; i < 14; i++) {
+    last = analyzeRisk({
+      ...BASE,
+      device_id: "STUCK-2",
+      temperature_c: 28 + (i % 3) * 0.1,
+      gas_raw: 200 + (i % 4) * 7,
+      water_level_cm: 5 + (i % 3) * 0.1,
+    });
+  }
+  return {
+    ok: last.stuck_sensors.length === 0,
+    info: `stuck=[${last.stuck_sensors.join(", ")}] after 14 jittered readings`,
+  };
+});
+
+check("Trend warning: rising gas → ETA before threshold", () => {
+  const t0 = 1_800_000_000_000; // fixed epoch → deterministic slope
+  let last = null;
+  for (let i = 0; i < 6; i++) {
+    last = analyzeRisk({
+      ...BASE,
+      device_id: "TREND-1",
+      timestamp: new Date(t0 + i * 10_000).toISOString(),
+      gas_raw: 200 + i * 40, // 200 → 400 in 50 s = +240/min
+    });
+  }
+  const w = last.trend_warnings.find((x) => x.sensor === "gas_raw");
+  const ok =
+    !!w &&
+    w.rate_per_min >= 40 &&
+    w.eta_minutes > 0 && w.eta_minutes <= 5 &&
+    last.reason.includes("rising");
+  return {
+    ok,
+    info: w ? `${w.message} (in reason: ${last.reason.includes("rising")})` : `no gas trend (warnings: ${last.trend_warnings.length})`,
+  };
+});
+
+check("No trend warning on oscillating readings", () => {
+  const t0 = 1_800_000_000_000;
+  let last = null;
+  for (let i = 0; i < 6; i++) {
+    last = analyzeRisk({
+      ...BASE,
+      device_id: "TREND-2",
+      timestamp: new Date(t0 + i * 10_000).toISOString(),
+      gas_raw: 200 + (i % 2) * 10,
+      temperature_c: 28 + (i % 2) * 0.2,
+      water_level_cm: 5 + (i % 2) * 0.2,
+    });
+  }
+  return {
+    ok: last.trend_warnings.length === 0,
+    info: `warnings=${last.trend_warnings.length} on oscillating data`,
+  };
+});
+
+check("risk_factors explain a danger reading (+ baseline for normal)", () => {
+  const normal = analyzeRisk({ ...BASE, device_id: "FACT-1" });
+  const danger = analyzeRisk({ ...BASE, device_id: "FACT-2", gas_raw: 650 });
+  const gasFactor = danger.risk_factors.find((f) => f.name === "gas_raw");
+  const ok =
+    normal.risk_factors.length >= 1 &&
+    normal.risk_factors.every((f) => typeof f.points === "number" && typeof f.detail === "string") &&
+    !!gasFactor && gasFactor.points > 0 && gasFactor.detail.length > 0;
+  return {
+    ok,
+    info: `normal→"${normal.risk_factors[0].name}" | danger→gas factor "${gasFactor ? gasFactor.detail : "MISSING"}" (${gasFactor ? gasFactor.points : "-"} pts)`,
+  };
+});
+
+check("Recommendation covers frozen sensor and pre-threshold trend", () => {
+  let last = null;
+  for (let i = 0; i < STUCK_WINDOW; i++) {
+    last = analyzeRisk({ ...BASE, device_id: "REC-STUCK" });
+  }
+  const stuckRec = last.recommendation;
+
+  const t0 = 1_800_000_000_000;
+  for (let i = 0; i < 6; i++) {
+    last = analyzeRisk({
+      ...BASE,
+      device_id: "REC-TREND",
+      timestamp: new Date(t0 + i * 10_000).toISOString(),
+      gas_raw: 200 + i * 40,
+    });
+  }
+  const trendRec = last.recommendation;
+
+  const ok = /frozen/.test(stuckRec) && /Pre-emptive/.test(trendRec);
+  return {
+    ok,
+    info: `stuck→"${stuckRec.slice(0, 66)}…" | trend→"${trendRec.slice(0, 66)}…"`,
+  };
+});
+
+check("Rescue advice persists while worker still down (fall confirmed)", () => {
+  // standing → free-fall → impact (CRITICAL, adopted) → lying ×3:
+  // the 3rd lying reading expires the hold window and drops the raw level
+  // to LOW — advice must still cover the confirmed, downed worker.
+  const seq = [
+    { acceleration_x_ms2: 0, acceleration_y_ms2: 0, acceleration_z_ms2: 9.8 },
+    { acceleration_x_ms2: 0, acceleration_y_ms2: 0, acceleration_z_ms2: 0.4 },
+    { acceleration_x_ms2: 25, acceleration_y_ms2: 20, acceleration_z_ms2: 35 },
+    { acceleration_x_ms2: 6, acceleration_y_ms2: 1.5, acceleration_z_ms2: 4 },
+    { acceleration_x_ms2: 6, acceleration_y_ms2: 1.5, acceleration_z_ms2: 4 },
+    { acceleration_x_ms2: 6, acceleration_y_ms2: 1.5, acceleration_z_ms2: 4 },
+  ];
+  let last = null;
+  for (const s of seq) {
+    last = analyzeRisk({ ...BASE, ...s, device_id: "REC-FALL" });
+  }
+  const ok =
+    last.fall_state === FALL_STATES.FALL_CONFIRMED &&
+    /still down/i.test(last.recommendation);
+  return {
+    ok,
+    info: `fall=${last.fall_state} level=${last.risk_level} → "${last.recommendation.slice(0, 74)}…"`,
+  };
 });
 
 // ─── Summary ─────────────────────────────────────────────────

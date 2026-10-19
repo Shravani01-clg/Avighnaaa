@@ -16,9 +16,11 @@ const ALERT_SEVERITY = {
   COMBINED_DANGER: "CRITICAL",
   ANOMALY: "MEDIUM",
   HIGH_RISK: "HIGH",
+  SENSOR_STUCK: "MEDIUM",
 };
 
 const ALERT_MESSAGES = {
+  SENSOR_STUCK: "Sensor frozen — device check required",
   GAS_DANGER: "Dangerous gas levels detected",
   FLOOD_DANGER: "Flooding / high water level detected",
   TEMP_DANGER: "Abnormal temperature detected",
@@ -348,31 +350,60 @@ const receiveSensorData = async (req, res) => {
 
     // ── Store risk prediction ───────────────────────────────
     // NEW: Persist the AI analysis alongside the risk result.
+    //
+    // The `ai` column is optional. If the deployed risk_predictions
+    // table has not been migrated with it yet, fall back to inserting
+    // without it so a sensor reading is never rejected because of a
+    // missing optional column. See migrations/007_risk_predictions_ai_column.sql.
 
-    const riskData = await store.insert(
-      "risk_predictions",
-      {
-        device_id,
+    const riskRow = {
+      device_id,
 
-        risk_score:
-          risk.risk_score,
+      risk_score:
+        risk.risk_score,
 
-        risk_level:
-          risk.risk_level,
+      risk_level:
+        risk.risk_level,
 
-        reason:
-          risk.reason,
+      reason:
+        risk.reason,
 
-        anomaly_detected:
-          risk.anomaly_detected,
+      anomaly_detected:
+        risk.anomaly_detected,
 
-        fall_state:
-          risk.fall_state,
+      fall_state:
+        risk.fall_state,
+    };
 
-        ai:
-          risk.ai || null,
+    let riskData;
+    try {
+      riskData = await store.insert(
+        "risk_predictions",
+        { ...riskRow, ai: risk.ai || null }
+      );
+    } catch (err) {
+      // Postgres/PostgREST reports an undefined column as
+      // "column risk_predictions.ai does not exist" (SQLSTATE 42703).
+      const isMissingAiColumn =
+        err &&
+        err.code === "42703" &&
+        typeof err.message === "string" &&
+        /\bdoes not exist\b/i.test(err.message) &&
+        /\bai\b/.test(err.message);
+
+      if (!isMissingAiColumn) {
+        console.error(
+          "Risk prediction insert failed:",
+          err.message
+        );
+        throw err;
       }
-    );
+
+      console.warn(
+        "risk_predictions.ai column missing — storing without AI payload"
+      );
+      riskData = await store.insert("risk_predictions", riskRow);
+    }
 
     const riskRecord = Array.isArray(riskData)
       ? riskData[0]
