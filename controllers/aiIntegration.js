@@ -1,5 +1,5 @@
-
 const http = require("http");
+const https = require("https");
 
 const AI_SERVER_URL =
   process.env.AI_SERVER_URL || "http://localhost:5001";
@@ -15,6 +15,8 @@ const RISK_RANK = {
  * Send a request to the Python AI server.
  * GET is used for /health.
  * POST is used for AI prediction endpoints.
+ *
+ * Supports both HTTP and HTTPS.
  */
 function callAI(path, body = {}, method = "POST") {
   return new Promise((resolve, reject) => {
@@ -23,20 +25,20 @@ function callAI(path, body = {}, method = "POST") {
     try {
       url = new URL(`${AI_SERVER_URL}${path}`);
     } catch (error) {
-      reject(new Error(`Invalid AI server URL: ${error.message}`));
+      reject(
+        new Error(`Invalid AI server URL: ${error.message}`)
+      );
       return;
     }
 
-    if (url.protocol !== "http:") {
-      reject(new Error("AI server URL must use HTTP."));
-      return;
-    }
-
-    const data = method === "GET" ? "" : JSON.stringify(body);
+    const data =
+      method === "GET" ? "" : JSON.stringify(body);
 
     const options = {
       hostname: url.hostname,
-      port: url.port || 80,
+      port:
+        url.port ||
+        (url.protocol === "https:" ? 443 : 80),
       path: url.pathname + url.search,
       method,
       headers: data
@@ -48,43 +50,59 @@ function callAI(path, body = {}, method = "POST") {
       timeout: 5000,
     };
 
-    const req = http.request(options, (res) => {
-      let responseBody = "";
+    // Select HTTP or HTTPS based on the AI server URL.
+    const requestModule =
+      url.protocol === "https:" ? https : http;
 
-      res.setEncoding("utf8");
+    const req = requestModule.request(
+      options,
+      (res) => {
+        let responseBody = "";
 
-      res.on("data", (chunk) => {
-        responseBody += chunk;
-      });
+        res.setEncoding("utf8");
 
-      res.on("end", () => {
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          reject(
-            new Error(
-              `AI server returned HTTP ${res.statusCode}: ${responseBody}`
-            )
-          );
-          return;
-        }
+        res.on("data", (chunk) => {
+          responseBody += chunk;
+        });
 
-        try {
-          resolve(JSON.parse(responseBody));
-        } catch (error) {
-          reject(
-            new Error(
-              `Invalid JSON from AI server: ${error.message}`
-            )
-          );
-        }
-      });
-    });
+        res.on("end", () => {
+          if (
+            res.statusCode < 200 ||
+            res.statusCode >= 300
+          ) {
+            reject(
+              new Error(
+                `AI server returned HTTP ${res.statusCode}: ${responseBody}`
+              )
+            );
+            return;
+          }
+
+          try {
+            resolve(JSON.parse(responseBody));
+          } catch (error) {
+            reject(
+              new Error(
+                `Invalid JSON from AI server: ${error.message}`
+              )
+            );
+          }
+        });
+      }
+    );
 
     req.on("error", (error) => {
-      reject(new Error(`AI server connection failed: ${error.message}`));
+      reject(
+        new Error(
+          `AI server connection failed: ${error.message}`
+        )
+      );
     });
 
     req.on("timeout", () => {
-      req.destroy(new Error("AI server request timed out."));
+      req.destroy(
+        new Error("AI server request timed out.")
+      );
     });
 
     if (data) {
@@ -99,19 +117,28 @@ function callAI(path, body = {}, method = "POST") {
  * Analyze incoming sensor data using the Python AI models.
  * This function uses the actual data passed by the backend.
  */
-async function getAIAnalysis(sensorData, ruleBasedRisk) {
+async function getAIAnalysis(
+  sensorData,
+  ruleBasedRisk
+) {
   try {
     const aiInput = {
       ...sensorData,
-      _rule_based_risk_level: ruleBasedRisk.risk_level,
-      _rule_based_risk_score: ruleBasedRisk.risk_score,
+      _rule_based_risk_level:
+        ruleBasedRisk.risk_level,
+      _rule_based_risk_score:
+        ruleBasedRisk.risk_score,
     };
 
-    const result = await callAI("/predict/all", aiInput);
+    const result = await callAI(
+      "/predict/all",
+      aiInput
+    );
 
     if (!result || result.error) {
       throw new Error(
-        result?.error || "The AI server returned an empty response."
+        result?.error ||
+          "The AI server returned an empty response."
       );
     }
 
@@ -124,7 +151,9 @@ async function getAIAnalysis(sensorData, ruleBasedRisk) {
     }
 
     const mlRiskLevel = String(
-      risk.risk_level ?? risk.risk ?? "LOW"
+      risk.risk_level ??
+        risk.risk ??
+        "LOW"
     ).toUpperCase();
 
     const ruleRiskLevel = String(
@@ -132,7 +161,9 @@ async function getAIAnalysis(sensorData, ruleBasedRisk) {
     ).toUpperCase();
 
     const mlRiskScore = Number(
-      risk.risk_score ?? risk.score ?? 0
+      risk.risk_score ??
+        risk.score ??
+        0
     );
 
     const ruleRiskScore = Number(
@@ -147,15 +178,19 @@ async function getAIAnalysis(sensorData, ruleBasedRisk) {
         : ruleRiskLevel;
 
     const finalRiskScore = Math.max(
-      Number.isFinite(mlRiskScore) ? mlRiskScore : 0,
-      Number.isFinite(ruleRiskScore) ? ruleRiskScore : 0
+      Number.isFinite(mlRiskScore)
+        ? mlRiskScore
+        : 0,
+      Number.isFinite(ruleRiskScore)
+        ? ruleRiskScore
+        : 0
     );
 
     const anomalyDetected = Boolean(
       anomaly.anomaly_detected ??
-      anomaly.is_anomaly ??
-      anomaly.anomaly ??
-      false
+        anomaly.is_anomaly ??
+        anomaly.anomaly ??
+        false
     );
 
     const aiAlerts = [];
@@ -170,7 +205,10 @@ async function getAIAnalysis(sensorData, ruleBasedRisk) {
       });
     }
 
-    if ((RISK_RANK[finalRiskLevel] ?? 0) >= RISK_RANK.HIGH) {
+    if (
+      (RISK_RANK[finalRiskLevel] ?? 0) >=
+      RISK_RANK.HIGH
+    ) {
       aiAlerts.push({
         type: "HIGH_RISK",
         severity: finalRiskLevel,
@@ -185,25 +223,37 @@ async function getAIAnalysis(sensorData, ruleBasedRisk) {
 
       aiAnalysis: {
         mlRiskPrediction: mlRiskLevel,
-        mlConfidence: risk.confidence ?? null,
-        mlProbabilities: risk.probabilities ?? null,
+        mlConfidence:
+          risk.confidence ?? null,
+        mlProbabilities:
+          risk.probabilities ?? null,
         anomalyDetected,
         anomalyScore:
-          anomaly.anomaly_score ?? anomaly.score ?? null,
+          anomaly.anomaly_score ??
+          anomaly.score ??
+          null,
         combinedScore:
-          combined.combined_score ?? combined.score ?? null,
+          combined.combined_score ??
+          combined.score ??
+          combined.risk_score ??
+          null,
       },
 
       aiAlerts,
     };
   } catch (error) {
-    console.error("AI analysis failed:", error.message);
+    console.error(
+      "AI analysis failed:",
+      error.message
+    );
 
     return {
       available: false,
       reason: error.message,
-      finalRiskLevel: ruleBasedRisk.risk_level,
-      finalRiskScore: ruleBasedRisk.risk_score,
+      finalRiskLevel:
+        ruleBasedRisk.risk_level,
+      finalRiskScore:
+        ruleBasedRisk.risk_score,
       aiAlerts: [],
     };
   }
@@ -211,14 +261,23 @@ async function getAIAnalysis(sensorData, ruleBasedRisk) {
 
 /**
  * Check whether the Python AI server is running.
- * IMPORTANT: The /health endpoint uses GET, not POST.
+ * IMPORTANT: The /health endpoint uses GET.
  */
 async function checkAIServer() {
   try {
-    const result = await callAI("/health", {}, "GET");
+    const result = await callAI(
+      "/health",
+      {},
+      "GET"
+    );
+
     return result.status === "ok";
   } catch (error) {
-    console.error("AI health check failed:", error.message);
+    console.error(
+      "AI health check failed:",
+      error.message
+    );
+
     return false;
   }
 }

@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 
 # Windows consoles default to cp1252 — force UTF-8 so startup output never crashes
@@ -45,6 +46,7 @@ REQUIRED_FIELDS = [
 def validate_reading(data):
     """Validate that a sensor reading has all required fields."""
     errors = []
+
     for field in REQUIRED_FIELDS:
         if field not in data:
             errors.append(f"Missing field: {field}")
@@ -76,13 +78,19 @@ def predict_risk():
     data = request.get_json()
 
     if not data:
-        return jsonify({"error": "Request body must be JSON"}), 400
+        return jsonify({
+            "error": "Request body must be JSON"
+        }), 400
 
     errors = validate_reading(data)
+
     if errors:
-        return jsonify({"errors": errors}), 400
+        return jsonify({
+            "errors": errors
+        }), 400
 
     result = predictor.predict(data)
+
     return jsonify(result)
 
 
@@ -92,13 +100,19 @@ def predict_anomaly():
     data = request.get_json()
 
     if not data:
-        return jsonify({"error": "Request body must be JSON"}), 400
+        return jsonify({
+            "error": "Request body must be JSON"
+        }), 400
 
     errors = validate_reading(data)
+
     if errors:
-        return jsonify({"errors": errors}), 400
+        return jsonify({
+            "errors": errors
+        }), 400
 
     result = detector.predict(data)
+
     return jsonify(result)
 
 
@@ -108,45 +122,105 @@ def predict_all():
     data = request.get_json()
 
     if not data:
-        return jsonify({"error": "Request body must be JSON"}), 400
+        return jsonify({
+            "error": "Request body must be JSON"
+        }), 400
 
     errors = validate_reading(data)
-    if errors:
-        return jsonify({"errors": errors}), 400
 
+    if errors:
+        return jsonify({
+            "errors": errors
+        }), 400
+
+    # Get AI predictions
     risk_result = predictor.predict(data)
     anomaly_result = detector.predict(data)
 
-    # Combined analysis (spec contract: anomaly_detected must always be present)
-    combined_risk_score = risk_result.get("risk_score", 15)
-    if anomaly_result["is_anomaly"]:
-        # If anomalous, boost the risk score
-        combined_risk_score = min(100, combined_risk_score + 20)
+    # ─── Combined analysis ────────────────────────────────────
 
+    # Start with the ML risk score
+    combined_risk_score = risk_result.get("risk_score", 15)
+
+    # If anomaly detected, increase risk score
+    if anomaly_result["is_anomaly"]:
+        combined_risk_score = min(
+            100,
+            combined_risk_score + 20
+        )
+
+    # Determine combined risk level
     combined_level = "LOW"
+
     if combined_risk_score >= 80:
         combined_level = "CRITICAL"
+
     elif combined_risk_score >= 55:
         combined_level = "HIGH"
+
     elif combined_risk_score >= 30:
         combined_level = "MEDIUM"
 
-    # The AI never downgrades — if rule-based or ML says higher, use that
-    rule_based_level = data.get("_rule_based_risk_level", "LOW")
-    rule_based_score = data.get("_rule_based_risk_score", 0)
+    # ─── Rule-based safety layer ──────────────────────────────
 
-    RISK_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
-    final_score = max(combined_risk_score, rule_based_score)
-    final_level = rule_based_level if RISK_RANK.get(rule_based_level, 0) > RISK_RANK.get(combined_level, 0) else combined_level
+    # The AI never downgrades a higher rule-based risk level.
+    rule_based_level = data.get(
+        "_rule_based_risk_level",
+        "LOW"
+    )
+
+    rule_based_score = data.get(
+        "_rule_based_risk_score",
+        0
+    )
+
+    RISK_RANK = {
+        "LOW": 0,
+        "MEDIUM": 1,
+        "HIGH": 2,
+        "CRITICAL": 3
+    }
+
+    # Use whichever score is higher
+    final_score = max(
+        combined_risk_score,
+        rule_based_score
+    )
+
+    # Use whichever risk level is higher
+    if RISK_RANK.get(
+        rule_based_level,
+        0
+    ) > RISK_RANK.get(
+        combined_level,
+        0
+    ):
+        final_level = rule_based_level
+    else:
+        final_level = combined_level
+
+    # ─── Final response ───────────────────────────────────────
 
     return jsonify({
         "risk": risk_result,
+
         "anomaly": anomaly_result,
+
         "combined": {
             "risk_score": final_score,
+
             "risk_level": final_level,
-            "anomaly_detected": bool(anomaly_result["is_anomaly"]),
-            "message": f"AI analysis complete. Risk: {final_level}, Anomaly: {'Yes' if anomaly_result['is_anomaly'] else 'No'}",
+
+            "anomaly_detected": bool(
+                anomaly_result["is_anomaly"]
+            ),
+
+            "message": (
+                f"AI analysis complete. "
+                f"Risk: {final_level}, "
+                f"Anomaly: "
+                f"{'Yes' if anomaly_result['is_anomaly'] else 'No'}"
+            ),
         },
     })
 
@@ -154,24 +228,73 @@ def predict_all():
 # ─── Main ─────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="RockFall AI Prediction Server")
-    parser.add_argument("--port", type=int, default=5001, help="Port to listen on")
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind to")
-    parser.add_argument("--load-models", action="store_true", help="Load saved models at startup")
+
+    parser = argparse.ArgumentParser(
+        description="RockFall AI Prediction Server"
+    )
+
+    # Render provides PORT automatically.
+    # Locally, if PORT is not defined, it falls back to 5001.
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(
+            os.environ.get("PORT", 5001)
+        ),
+        help="Port to listen on",
+    )
+
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="0.0.0.0",
+        help="Host to bind to"
+    )
+
+    parser.add_argument(
+        "--load-models",
+        action="store_true",
+        help="Load saved models at startup"
+    )
+
     args = parser.parse_args()
+
+    # ─── Load saved ML models ─────────────────────────────────
 
     if args.load_models:
         print("Loading saved models...")
+
         detector.load()
         predictor.load()
 
-    print(f"\n🤖 RockFall AI Server starting on http://{args.host}:{args.port}")
-    print("   POST /predict/risk      — Risk prediction")
-    print("   POST /predict/anomaly   — Anomaly detection")
-    print("   POST /predict/all       — Combined analysis")
-    print("   GET  /health            — Health check\n")
+    # ─── Start server ─────────────────────────────────────────
 
-    app.run(host=args.host, port=args.port, debug=False)
+    print(
+        f"\n🤖 RockFall AI Server starting on "
+        f"http://{args.host}:{args.port}"
+    )
+
+    print(
+        "   POST /predict/risk      — Risk prediction"
+    )
+
+    print(
+        "   POST /predict/anomaly   — Anomaly detection"
+    )
+
+    print(
+        "   POST /predict/all       — Combined analysis"
+    )
+
+    print(
+        "   GET  /health            — Health check\n"
+    )
+
+    app.run(
+        host=args.host,
+        port=args.port,
+        debug=False
+    )
 
 
 if __name__ == "__main__":

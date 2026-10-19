@@ -21,6 +21,28 @@ const memoryStore = {
   workers: [
     { id: 1, name: "Test Worker", role: "Miner", created_at: new Date().toISOString() },
   ],
+
+  // ── Rescue layer tables (in-memory fallback) ──────────────
+  profiles: [],
+  rescue_teams: [
+    { id: 1, team_id: "RT-01", team_name: "Fire & Rescue", team_type: "FIRE_RESCUE", status: "AVAILABLE", current_location: "Building A / Station Bay 1", created_at: new Date().toISOString() },
+    { id: 2, team_id: "RT-02", team_name: "Medical", team_type: "MEDICAL", status: "AVAILABLE", current_location: "Building A / Clinic", created_at: new Date().toISOString() },
+    { id: 3, team_id: "RT-03", team_name: "Water Rescue", team_type: "WATER_RESCUE", status: "AVAILABLE", current_location: "Building B / Pump House", created_at: new Date().toISOString() },
+    { id: 4, team_id: "RT-04", team_name: "Security / Emergency", team_type: "SECURITY", status: "AVAILABLE", current_location: "Main Gate / Control Room", created_at: new Date().toISOString() },
+  ],
+  device_locations: [
+    { device_id: "ESP32_01", building: "Building A", floor: "2", room: "204", zone: "Zone A", created_at: new Date().toISOString() },
+    { device_id: "RF-001", building: "Building A", floor: "2", room: "204", zone: "Zone A", created_at: new Date().toISOString() },
+  ],
+  incidents: [],
+  incident_events: [],
+  device_commands: [],
+
+  // ── Rescue equipment (RESCUE_TEAM only) ─────────────────────
+  rescue_equipment: [],
+  equipment_checklists: [],
+  equipment_usage: [],
+  equipment_events: [],
 };
 
 let _id = 1;
@@ -75,7 +97,11 @@ async function select(table, { filters = {}, orderBy = null, limit = 50 } = {}) 
     let query = supabase.from(table).select("*");
 
     for (const [key, value] of Object.entries(filters)) {
-      query = query.eq(key, value);
+      if (Array.isArray(value)) {
+        query = query.in(key, value);
+      } else {
+        query = query.eq(key, value);
+      }
     }
 
     if (orderBy) {
@@ -93,7 +119,11 @@ async function select(table, { filters = {}, orderBy = null, limit = 50 } = {}) 
   let rows = memoryStore[table] || [];
 
   for (const [key, value] of Object.entries(filters)) {
-    rows = rows.filter((r) => r[key] === value);
+    if (Array.isArray(value)) {
+      rows = rows.filter((r) => value.includes(r[key]));
+    } else {
+      rows = rows.filter((r) => r[key] === value);
+    }
   }
 
   if (orderBy) {
