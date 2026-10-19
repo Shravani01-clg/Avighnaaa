@@ -76,8 +76,8 @@ if (process.env.PORT && String(PORT) !== String(process.env.PORT)) {
   );
 }
 
-app.listen(PORT, () => {
-  console.log(`RockFall backend running on http://localhost:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+    console.log(`RockFall backend running on http://localhost:${PORT}`);
 
   // Rescue layer: escalation scheduler (checks every tick for
   // unacknowledged incidents past RESPONSE_TIMEOUT_MINUTES)
