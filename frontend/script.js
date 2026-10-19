@@ -12,8 +12,8 @@
 lucide.createIcons();
 
 const API_BASE_URL = "http://localhost:5002/api";
-const SUPABASE_URL = "https://qsymativfurrwguffwvc.supabase.co";
-const SUPABASE_KEY = "sb_publishable_NBqLNkIQT-nxb7rfvJFJ0Q_Pyu6wsCg";
+const SUPABASE_URL = "https://iuiytpsnvrsshmygfrny.supabase.co";
+const SUPABASE_KEY = "sb_publishable_CkG8WbV7G8Qgbq9XIr_ocA_jTW5nFc-";
 
 const supabaseClient = supabase.createClient(
     SUPABASE_URL,
