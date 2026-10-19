@@ -1,106 +1,123 @@
+/**
+ * AI Integration Layer
+ *
+ * Connects the Node.js backend to the Python AI server.
+ * Falls back gracefully if the AI server is unavailable.
+ *
+ * The AI never overrides the rule-based engine — it only provides
+ * a second opinion. If AI says higher risk, we use AI's level.
+ * If rule-based says higher, we keep rule-based.
+ */
 
 const http = require("http");
 
-const AI_SERVER_URL =
-  process.env.AI_SERVER_URL || "http://localhost:5001";
+const AI_SERVER_URL = process.env.AI_SERVER_URL || "http://localhost:5001";
 
-const RISK_RANK = {
-  LOW: 0,
-  MEDIUM: 1,
-  HIGH: 2,
-  CRITICAL: 3,
-};
+const RISK_RANK = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
+
+// ─── AI alert cooldown ───────────────────────────────────────
+// The backend already creates at most one unresolved alert per type, but
+// the per-reading `alerts` array is echoed back in EVERY response — while
+// an anomaly persists, ANOMALY would be re-emitted every 3 seconds and
+// the frontend would re-toast it constantly. A per-device cooldown makes
+// each AI alert fire once, then stay quiet for ALERT_COOLDOWN_MS.
+// Rule-engine emergencies (SOS, FALL_DETECTED, *_DANGER) never travel
+// through this path — they come from the rule engine and are governed by
+// the alert-until-resolved logic in sensorController.
+const ALERT_COOLDOWN_MS = 30_000;
+const lastAlertEmit = new Map(); // `${device_id}::${type}` → timestamp of last emission
 
 /**
- * Send a request to the Python AI server.
- * GET is used for /health.
- * POST is used for AI prediction endpoints.
+ * Should this AI alert be emitted right now?
+ * First emission for (device, type) always passes; repeats within
+ * ALERT_COOLDOWN_MS are suppressed. Injectable `now` for tests.
  */
-function callAI(path, body = {}, method = "POST") {
+function shouldEmitAlert(type, deviceId, now = Date.now()) {
+  const key = `${deviceId || "__default__"}::${type}`;
+  const last = lastAlertEmit.get(key);
+  if (last !== undefined && now - last < ALERT_COOLDOWN_MS) return false;
+  lastAlertEmit.set(key, now);
+  return true;
+}
+
+/** Clear cooldown state (tests / session reset). */
+function resetAlertCooldown() {
+  lastAlertEmit.clear();
+}
+
+/**
+ * Call the Python AI server
+ */
+function callAI(path, body) {
   return new Promise((resolve, reject) => {
-    let url;
-
-    try {
-      url = new URL(`${AI_SERVER_URL}${path}`);
-    } catch (error) {
-      reject(new Error(`Invalid AI server URL: ${error.message}`));
-      return;
-    }
-
-    if (url.protocol !== "http:") {
-      reject(new Error("AI server URL must use HTTP."));
-      return;
-    }
-
-    const data = method === "GET" ? "" : JSON.stringify(body);
+    const url = new URL(`${AI_SERVER_URL}${path}`);
+    const data = JSON.stringify(body);
 
     const options = {
       hostname: url.hostname,
-      port: url.port || 80,
-      path: url.pathname + url.search,
-      method,
-      headers: data
-        ? {
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(data),
-          }
-        : {},
-      timeout: 5000,
+      port: url.port,
+      path: url.pathname,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(data),
+      },
+      timeout: 3000, // 3 second timeout
     };
 
     const req = http.request(options, (res) => {
-      let responseBody = "";
-
-      res.setEncoding("utf8");
-
-      res.on("data", (chunk) => {
-        responseBody += chunk;
-      });
-
+      let body = "";
+      res.on("data", (chunk) => (body += chunk));
       res.on("end", () => {
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          reject(
-            new Error(
-              `AI server returned HTTP ${res.statusCode}: ${responseBody}`
-            )
-          );
-          return;
-        }
-
         try {
-          resolve(JSON.parse(responseBody));
-        } catch (error) {
-          reject(
-            new Error(
-              `Invalid JSON from AI server: ${error.message}`
-            )
-          );
+          resolve(JSON.parse(body));
+        } catch {
+          reject(new Error("Invalid JSON from AI server"));
         }
       });
     });
 
-    req.on("error", (error) => {
-      reject(new Error(`AI server connection failed: ${error.message}`));
-    });
-
+    req.on("error", (err) => reject(err));
     req.on("timeout", () => {
-      req.destroy(new Error("AI server request timed out."));
+      req.destroy();
+      reject(new Error("AI server timeout"));
     });
 
-    if (data) {
-      req.write(data);
-    }
-
+    req.write(data);
     req.end();
   });
 }
 
 /**
- * Analyze incoming sensor data using the Python AI models.
- * This function uses the actual data passed by the backend.
+ * Alerts that must fire regardless of AI-server reachability.
+ *
+ * The stuck-sensor verdict comes from the rule engine's rolling window,
+ * so it is available even in rules_fallback mode — its alert therefore
+ * fires on EVERY path (ANOMALY / AI_RISK_UPGRADE stay ML-only: their
+ * verdict only exists when the models answer). Shared by all three paths
+ * so the cooldown applies uniformly.
+ */
+function stuckSensorAlerts(ruleBasedRisk, sensorData) {
+  if (
+    (ruleBasedRisk.stuck_sensors || []).length > 0 &&
+    shouldEmitAlert("SENSOR_STUCK", sensorData.device_id)
+  ) {
+    return ["SENSOR_STUCK"];
+  }
+  return [];
+}
+
+/**
+ * Get AI analysis for a sensor reading.
+ * Combines rule-based risk with ML predictions.
+ *
+ * @param {Object} sensorData - Raw sensor reading
+ * @param {Object} ruleBasedRisk - Result from the rule-based risk engine
+ * @returns {{ risk_level, risk_score, ai_analysis, alerts_to_add }}
  */
 async function getAIAnalysis(sensorData, ruleBasedRisk) {
   try {
+    // Call the AI server for combined analysis
     const aiInput = {
       ...sensorData,
       _rule_based_risk_level: ruleBasedRisk.risk_level,
@@ -110,115 +127,126 @@ async function getAIAnalysis(sensorData, ruleBasedRisk) {
     const result = await callAI("/predict/all", aiInput);
 
     if (!result || result.error) {
-      throw new Error(
-        result?.error || "The AI server returned an empty response."
-      );
+      const reason = result?.error || "No response";
+      return {
+        available: false,
+        reason,
+        finalRiskLevel: ruleBasedRisk.risk_level,
+        finalRiskScore: ruleBasedRisk.risk_score,
+        aiAlerts: stuckSensorAlerts(ruleBasedRisk, sensorData),
+        // The block below keeps the SAME shape as the success path so the
+        // backend/frontend always receive advice + mode, even on errors.
+        aiAnalysis: {
+          source: "rules_fallback",
+          aiAvailable: false,
+          reason,
+          recommendation: ruleBasedRisk.recommendation || null,
+          stuckSensors: ruleBasedRisk.stuck_sensors || [],
+          trendWarnings: ruleBasedRisk.trend_warnings || [],
+          aiRiskFactors: ruleBasedRisk.risk_factors || [],
+        },
+      };
     }
 
     const { risk, anomaly, combined } = result;
 
-    if (!risk || !anomaly || !combined) {
-      throw new Error(
-        "The AI response is missing risk, anomaly, or combined results."
-      );
+    // Determine final risk level (AI never downgrades)
+    let finalRiskLevel = ruleBasedRisk.risk_level;
+    let finalRiskScore = ruleBasedRisk.risk_score;
+
+    if (RISK_RANK[combined.risk_level] > RISK_RANK[ruleBasedRisk.risk_level]) {
+      finalRiskLevel = combined.risk_level;
+      finalRiskScore = combined.risk_score;
     }
 
-    const mlRiskLevel = String(
-      risk.risk_level ?? risk.risk ?? "LOW"
-    ).toUpperCase();
-
-    const ruleRiskLevel = String(
-      ruleBasedRisk.risk_level ?? "LOW"
-    ).toUpperCase();
-
-    const mlRiskScore = Number(
-      risk.risk_score ?? risk.score ?? 0
-    );
-
-    const ruleRiskScore = Number(
-      ruleBasedRisk.risk_score ?? 0
-    );
-
-    // Keep whichever risk level is more severe.
-    const finalRiskLevel =
-      (RISK_RANK[mlRiskLevel] ?? 0) >
-      (RISK_RANK[ruleRiskLevel] ?? 0)
-        ? mlRiskLevel
-        : ruleRiskLevel;
-
-    const finalRiskScore = Math.max(
-      Number.isFinite(mlRiskScore) ? mlRiskScore : 0,
-      Number.isFinite(ruleRiskScore) ? ruleRiskScore : 0
-    );
-
-    const anomalyDetected = Boolean(
-      anomaly.anomaly_detected ??
-      anomaly.is_anomaly ??
-      anomaly.anomaly ??
-      false
-    );
-
+    // Additional alerts from AI (each gated by the per-device cooldown)
     const aiAlerts = [];
 
-    if (anomalyDetected) {
-      aiAlerts.push({
-        type: "ANOMALY",
-        severity: finalRiskLevel,
-        message:
-          anomaly.message ||
-          "The AI anomaly detector identified unusual sensor behavior.",
-      });
+    // Anomaly detected → add ANOMALY alert
+    if (anomaly.is_anomaly && shouldEmitAlert("ANOMALY", sensorData.device_id)) {
+      aiAlerts.push("ANOMALY");
     }
 
-    if ((RISK_RANK[finalRiskLevel] ?? 0) >= RISK_RANK.HIGH) {
-      aiAlerts.push({
-        type: "HIGH_RISK",
-        severity: finalRiskLevel,
-        message: `AI risk assessment indicates ${finalRiskLevel} risk.`,
-      });
+    // ML predicts higher risk → add AI_RISK_UPGRADE alert
+    if (
+      RISK_RANK[risk.predicted_risk_level] > RISK_RANK[ruleBasedRisk.risk_level] &&
+      shouldEmitAlert("AI_RISK_UPGRADE", sensorData.device_id)
+    ) {
+      aiAlerts.push("AI_RISK_UPGRADE");
     }
+
+    // Frozen sensor (rule-side verdict) → device-health alert; fires even
+    // when the AI server is down (shared helper, cooldown applies).
+    aiAlerts.push(...stuckSensorAlerts(ruleBasedRisk, sensorData));
+
+    // Explainability: rule-engine factors + the ML model's opinion (Day 2)
+    const mlRaised = RISK_RANK[risk.predicted_risk_level] > RISK_RANK[ruleBasedRisk.risk_level];
+    const aiRiskFactors = [
+      ...(ruleBasedRisk.risk_factors || []),
+      {
+        source: "ml",
+        name: "risk_predictor",
+        points: 0,
+        detail:
+          `predicts ${risk.predicted_risk_level} ` +
+          `(${Math.round((risk.confidence || 0) * 100)}% confidence) — ` +
+          (mlRaised ? "raised the final level" : "agrees or stays below the rules (MAX fusion never downgrades)"),
+      },
+    ];
 
     return {
       available: true,
       finalRiskLevel,
       finalRiskScore,
-
       aiAnalysis: {
-        mlRiskPrediction: mlRiskLevel,
-        mlConfidence: risk.confidence ?? null,
-        mlProbabilities: risk.probabilities ?? null,
-        anomalyDetected,
-        anomalyScore:
-          anomaly.anomaly_score ?? anomaly.score ?? null,
-        combinedScore:
-          combined.combined_score ?? combined.score ?? null,
+        source: "ml_fusion",
+        aiAvailable: true,
+        // Advice comes from the rule engine (works offline); fusion only
+        // ever RAISES the level, so the recommendation stays honest.
+        recommendation: ruleBasedRisk.recommendation || null,
+        stuckSensors: ruleBasedRisk.stuck_sensors || [],
+        trendWarnings: ruleBasedRisk.trend_warnings || [],
+        aiRiskFactors,
+        mlRiskPrediction: risk.predicted_risk_level,
+        mlConfidence: risk.confidence,
+        mlProbabilities: risk.probabilities,
+        anomalyDetected: anomaly.is_anomaly,
+        anomalyScore: anomaly.anomaly_score,
+        combinedScore: combined.risk_score,
       },
-
       aiAlerts,
     };
-  } catch (error) {
-    console.error("AI analysis failed:", error.message);
-
+  } catch (err) {
+    // AI server unavailable — fall back to rule-based only.
+    // Same aiAnalysis shape as the success path (mode flagged offline) so
+    // the rescue recommendation still reaches the client.
     return {
       available: false,
-      reason: error.message,
+      reason: err.message,
       finalRiskLevel: ruleBasedRisk.risk_level,
       finalRiskScore: ruleBasedRisk.risk_score,
-      aiAlerts: [],
+      aiAlerts: stuckSensorAlerts(ruleBasedRisk, sensorData),
+      aiAnalysis: {
+        source: "rules_fallback",
+        aiAvailable: false,
+        reason: err.message,
+        recommendation: ruleBasedRisk.recommendation || null,
+        stuckSensors: ruleBasedRisk.stuck_sensors || [],
+        trendWarnings: ruleBasedRisk.trend_warnings || [],
+        aiRiskFactors: ruleBasedRisk.risk_factors || [],
+      },
     };
   }
 }
 
 /**
- * Check whether the Python AI server is running.
- * IMPORTANT: The /health endpoint uses GET, not POST.
+ * Check if the AI server is running
  */
 async function checkAIServer() {
   try {
-    const result = await callAI("/health", {}, "GET");
+    const result = await callAI("/health", {});
     return result.status === "ok";
-  } catch (error) {
-    console.error("AI health check failed:", error.message);
+  } catch {
     return false;
   }
 }
@@ -227,4 +255,8 @@ module.exports = {
   getAIAnalysis,
   checkAIServer,
   AI_SERVER_URL,
+  // Alert cooldown (exposed for validate.js §5 + future use)
+  shouldEmitAlert,
+  resetAlertCooldown,
+  ALERT_COOLDOWN_MS,
 };
