@@ -140,7 +140,12 @@ if (!Number.isInteger(PORT) || PORT <= 0 || PORT > 65535) {
   console.error(`Invalid PORT "${process.env.PORT}" — using 8080`);
 }
 
-server.listen(Number.isInteger(PORT) ? PORT : 8080, HOST, () => {
+server.listen(Number.isInteger(PORT) ? PORT : 8080, HOST);
+
+// 'listening' (not the listen callback) so the banner is only printed when
+// the bind actually succeeded — otherwise a port clash printed the banner
+// and then the error.
+server.on("listening", () => {
   console.log(`AVIGHNAA frontend (dev) on http://${HOST}:${PORT}`);
   console.log(`  serving   : ${ROOT}`);
   console.log(`  caching   : disabled (Cache-Control: no-store)`);

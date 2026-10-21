@@ -76,7 +76,12 @@ if (process.env.PORT && String(PORT) !== String(process.env.PORT)) {
   );
 }
 
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT);
+
+// 'listening' (not the listen callback) so the banner is only printed when
+// the bind actually succeeded — otherwise a port clash printed
+// "backend running" and then the error.
+server.on("listening", () => {
   console.log(`RockFall backend running on http://localhost:${PORT}`);
 
   // Rescue layer: escalation scheduler (checks every tick for
