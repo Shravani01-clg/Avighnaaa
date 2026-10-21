@@ -11,9 +11,10 @@
 
 lucide.createIcons();
 
+// Must match PORT in .env (5002). Change both together if you move the port.
 const API_BASE_URL = "http://localhost:5002/api";
-const SUPABASE_URL = "https://qsymativfurrwguffwvc.supabase.co";
-const SUPABASE_KEY = "sb_publishable_NBqLNkIQT-nxb7rfvJFJ0Q_Pyu6wsCg";
+const SUPABASE_URL = "https://iuiytpsnvrsshmygfrny.supabase.co";
+const SUPABASE_KEY = "sb_publishable_CkG8WbV7G8Qgbq9XIr_ocA_jTW5nFc-";
 
 const supabaseClient = supabase.createClient(
     SUPABASE_URL,
@@ -62,8 +63,302 @@ function typeChipClass(alertType) {
     if (t === 'AI_RISK_UPGRADE') return 'chip-ai';
     if (t === 'FALL_DETECTED' || t === 'COMBINED_DANGER') return 'chip-critical';
     if (t === 'GAS_DANGER' || t === 'FLOOD_DANGER' || t === 'TEMP_DANGER') return 'chip-high';
+    if (t === 'SENSOR_STUCK') return 'chip-anomaly';
 
     return '';
+}
+
+// ==========================================================================
+// AI Integration Extras (source badge, ML chip, warnings, why-score)
+// ==========================================================================
+
+function normalizeAISource(source) {
+    return String(source || '').trim().toLowerCase();
+}
+
+function formatAIConfidencePercent(value) {
+    const num = Number(value);
+
+    if (!Number.isFinite(num)) return null;
+
+    // The API may send confidence as 0-1 or already as 0-100.
+    const pct = num > 1 ? num : num * 100;
+
+    return Math.round(pct);
+}
+
+function renderAISourceBadge(aiRisk) {
+    const badge = document.getElementById('ai-source-badge');
+
+    if (!badge) return;
+
+    const source = normalizeAISource(aiRisk?.source);
+
+    if (source === 'ml_fusion') {
+        badge.dataset.source = 'online';
+        badge.innerText = 'AI Online';
+    } else if (source === 'rules_fallback') {
+        badge.dataset.source = 'offline';
+        badge.innerText = 'Rules Only (AI Offline)';
+    } else {
+        badge.dataset.source = 'unknown';
+        badge.innerText = 'AI status unknown';
+    }
+}
+
+function renderAIMLchip(aiRisk) {
+    const chip = document.getElementById('ai-ml-chip');
+
+    if (!chip) return;
+
+    const source = normalizeAISource(aiRisk?.source);
+    const prediction = aiRisk?.mlRiskPrediction;
+
+    if (
+        source !== 'ml_fusion' ||
+        prediction === null ||
+        prediction === undefined ||
+        prediction === ''
+    ) {
+        chip.classList.add('is-hidden');
+        chip.innerText = '';
+        return;
+    }
+
+    const pct = formatAIConfidencePercent(aiRisk?.mlConfidence);
+
+    chip.innerText =
+        `ML: ${String(prediction).toUpperCase()}` +
+        (pct !== null ? ` (${pct}%)` : '');
+
+    chip.classList.remove('is-hidden');
+}
+
+function renderAIRecommendationInline(aiRisk) {
+    const el = document.getElementById('ai-recommendation-inline');
+
+    if (!el) return;
+
+    const recommendation =
+        aiRisk?.recommendation || aiRisk?.reason;
+
+    if (
+        recommendation === null ||
+        recommendation === undefined ||
+        String(recommendation).trim() === ''
+    ) {
+        el.classList.add('is-hidden');
+        el.innerText = '';
+        return;
+    }
+
+    el.innerText = String(recommendation);
+    el.classList.remove('is-hidden');
+}
+
+function collectWorkerField(workers, picker) {
+    const out = [];
+    const seen = new Set();
+
+    (workers || []).forEach(worker => {
+        const value = picker(worker);
+        const items = Array.isArray(value)
+            ? value
+            : value === null ||
+              value === undefined ||
+              value === ''
+            ? []
+            : [value];
+
+        items.forEach(item => {
+            if (item === null || item === undefined) return;
+
+            const key =
+                typeof item === 'object'
+                    ? JSON.stringify(item)
+                    : String(item);
+
+            if (seen.has(key)) return;
+
+            seen.add(key);
+            out.push(item);
+        });
+    });
+
+    return out;
+}
+
+function trendWarningMessage(warning) {
+    if (warning === null || warning === undefined) return '';
+
+    if (typeof warning === 'string') return warning;
+
+    if (typeof warning === 'object') {
+        return (
+            warning.message ||
+            warning.text ||
+            warning.detail ||
+            ''
+        );
+    }
+
+    return String(warning);
+}
+
+function renderAIWarnings(stuckSensors, trendWarnings) {
+    const stuckEl = document.getElementById('ai-stuck-warning');
+
+    if (stuckEl) {
+        const stuck = (Array.isArray(stuckSensors)
+            ? stuckSensors
+            : []
+        ).filter(Boolean);
+
+        if (stuck.length) {
+            stuckEl.innerText =
+                '⚠ Frozen sensor — ' +
+                stuck.join(', ') +
+                (stuck.length > 1
+                    ? ' readings unreliable'
+                    : ' reading unreliable');
+
+            stuckEl.classList.remove('is-hidden');
+        } else {
+            stuckEl.innerText = '';
+            stuckEl.classList.add('is-hidden');
+        }
+    }
+
+    const trendEl = document.getElementById('ai-trend-warning');
+
+    if (trendEl) {
+        const messages = (Array.isArray(trendWarnings)
+            ? trendWarnings
+            : []
+        )
+            .map(trendWarningMessage)
+            .filter(message => String(message).trim() !== '');
+
+        if (messages.length) {
+            trendEl.innerText = messages
+                .map(message => `⚠ ${message}`)
+                .join('\n');
+
+            trendEl.classList.remove('is-hidden');
+        } else {
+            trendEl.innerText = '';
+            trendEl.classList.add('is-hidden');
+        }
+    }
+}
+
+function renderAIWhyScore(factors) {
+    const panel = document.getElementById('ai-why');
+    const list = document.getElementById('ai-why-list');
+
+    if (!panel || !list) return;
+
+    const items = Array.isArray(factors)
+        ? factors.filter(Boolean)
+        : [];
+
+    if (!items.length) {
+        list.innerHTML = '';
+        panel.classList.add('is-hidden');
+        return;
+    }
+
+    list.innerHTML = items
+        .map(factor => {
+            const source = normalizeAISource(factor.source);
+            const name = safeText(factor.name, 'Risk factor');
+            const points = Number(factor.points);
+            const pointsText = Number.isFinite(points)
+                ? `${points > 0 ? '+' : ''}${points}`
+                : '';
+            const detail = factor.detail
+                ? `<div class="why-detail">${safeText(
+                      factor.detail,
+                      ''
+                  )}</div>`
+                : '';
+
+            return `
+                <li>
+                    ${
+                        source
+                            ? `<span class="why-source why-source-${source}">${source}</span>`
+                            : ''
+                    }
+                    <span class="why-name">${name}</span>
+                    ${
+                        pointsText
+                            ? `<span class="why-points">${pointsText}</span>`
+                            : ''
+                    }
+                    ${detail}
+                </li>
+            `;
+        })
+        .join('');
+
+    panel.classList.remove('is-hidden');
+}
+
+function renderAIExtras(aiRisk, workers) {
+    renderAISourceBadge(aiRisk);
+    renderAIMLchip(aiRisk);
+    renderAIRecommendationInline(aiRisk);
+    renderAIWhyScore(aiRisk?.aiRiskFactors);
+    renderAIWarnings(
+        collectWorkerField(
+            workers,
+            worker => worker.aiRisk?.stuckSensors
+        ),
+        collectWorkerField(
+            workers,
+            worker => worker.aiRisk?.trendWarnings
+        )
+    );
+}
+
+function resetAIExtras() {
+    const badge = document.getElementById('ai-source-badge');
+
+    if (badge) {
+        badge.dataset.source = 'unknown';
+        badge.innerText = 'AI status unknown';
+    }
+
+    const chip = document.getElementById('ai-ml-chip');
+
+    if (chip) {
+        chip.classList.add('is-hidden');
+        chip.innerText = '';
+    }
+
+    const inlineRec = document.getElementById(
+        'ai-recommendation-inline'
+    );
+
+    if (inlineRec) {
+        inlineRec.classList.add('is-hidden');
+        inlineRec.innerText = '';
+    }
+
+    const whyPanel = document.getElementById('ai-why');
+
+    if (whyPanel) {
+        whyPanel.classList.add('is-hidden');
+    }
+
+    const whyList = document.getElementById('ai-why-list');
+
+    if (whyList) {
+        whyList.innerHTML = '';
+    }
+
+    renderAIWarnings([], []);
 }
 
 function setRiskPill(level) {
@@ -121,6 +416,8 @@ function resetAIPanel() {
         aiRecommendation.innerHTML =
             '<strong>AI Recommendation:</strong><br>Waiting for latest AI risk analysis.';
     }
+
+    resetAIExtras();
 }
 
 function safeText(value, fallback = 'N/A') {
@@ -129,6 +426,15 @@ function safeText(value, fallback = 'N/A') {
     }
 
     return String(value);
+}
+
+// Escape a value before it is written into an HTML attribute.
+function escapeAttr(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
 }
 
 function emergencySensorValue(
@@ -151,7 +457,10 @@ function emergencySensorValue(
 
 const emergencyState = {
     activeDeviceIds: new Set(),
-    minimized: false
+    minimized: false,
+    // Which active SOS alert the admin is focusing on (null = all).
+    // Pure view state — minimizing or switching never touches alert data.
+    selectedDeviceId: null
 };
 
 function emergencyRiskInfo(worker) {
@@ -207,6 +516,17 @@ function emergencyRefresh() {
             );
         }
     });
+
+    // Drop the focused alert only if it actually cleared — the admin keeps
+    // their selection (and the overlay keeps its state) otherwise.
+    if (
+        emergencyState.selectedDeviceId &&
+        !emergencyState.activeDeviceIds.has(
+            emergencyState.selectedDeviceId
+        )
+    ) {
+        emergencyState.selectedDeviceId = null;
+    }
 
     const overlay =
         document.getElementById('emergency-overlay');
@@ -275,16 +595,15 @@ function emergencyRefresh() {
         document.getElementById('emergency-return');
 
     if (returnBtn) {
-        returnBtn.disabled = affected.length > 0;
+        // The dashboard must stay usable while an SOS is active:
+        // returning MINIMIZES the emergency view, it never dismisses
+        // or resolves the alert.
+        returnBtn.disabled = false;
 
         returnBtn.title =
-            affected.length > 0
-                ? 'SOS still active'
-                : 'Return to the normal dashboard';
+            'Return to the dashboard — the SOS alert stays active';
     }
-}
-
-function renderEmergencyOverlay(affectedWorkers) {
+}function renderEmergencyOverlay(affectedWorkers) {
     const container =
         document.getElementById('emergency-workers');
 
@@ -292,11 +611,23 @@ function renderEmergencyOverlay(affectedWorkers) {
 
     const sorted = [...affectedWorkers].sort(
         (a, b) =>
-            emergencyRiskInfo(b).score -
-            emergencyRiskInfo(a).score
+            emergencyRiskInfo(b).score - emergencyRiskInfo(a).score
     );
 
-    container.innerHTML = sorted.map(worker => {
+    // Multi-alert switcher: with several active SOS alerts the admin can
+    // move between them without losing any alert's information.
+    renderEmergencySwitcher(sorted);
+
+    const selected = emergencyState.selectedDeviceId;
+    let visible = selected
+        ? sorted.filter(
+            worker => worker.sensorData?.device_id === selected
+        )
+        : sorted;
+
+    if (visible.length === 0) visible = sorted;
+
+    container.innerHTML = visible.map(worker => {
         const d = worker.sensorData;
         const risk = emergencyRiskInfo(worker);
 
@@ -455,11 +786,165 @@ function renderEmergencyOverlay(affectedWorkers) {
                     ${recParts.join(' ')}
                 </div>
 
+                ${emergencyAiHtml(worker)}
+
+                <div class="emergency-card-actions">
+                    <button
+                        type="button"
+                        class="btn-emergency-detail"
+                        data-sos-device="${escapeAttr(d.device_id)}"
+                    >
+                        Open SOS Details
+                        <i data-lucide="chevron-right"></i>
+                    </button>
+                </div>
+
             </div>
         `;
     }).join('');
 
+    container
+        .querySelectorAll('[data-sos-device]')
+        .forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (typeof window.openSosDetail === 'function') {
+                    window.openSosDetail({
+                        deviceId: btn.getAttribute('data-sos-device')
+                    });
+                }
+            });
+        });
+
     lucide.createIcons();
+}
+
+/**
+ * Per-alert AI analysis for the emergency overlay.
+ * Uses the LIVE AI risk record already loaded for this device
+ * (GET /api/risk/:deviceId via loadRiskFromBackend). When no AI
+ * record exists we say so instead of inventing a recommendation.
+ */
+function emergencyAiHtml(worker) {
+    const risk = worker.aiRisk;
+
+    const hasAnalysis =
+        risk &&
+        (
+            risk.reason ||
+            risk.level ||
+            Number.isFinite(Number(risk.score))
+        );
+
+    if (!hasAnalysis) {
+        return `
+            <div class="emergency-ai unavailable">
+                <strong>AI ANALYSIS:</strong>
+                AI recommendation unavailable for this alert.
+            </div>
+        `;
+    }
+
+    const lines = [];
+
+    if (
+        Number.isFinite(Number(risk.score)) ||
+        risk.level
+    ) {
+        lines.push(
+            `Risk assessment: ${
+                Number.isFinite(Number(risk.score))
+                    ? `${Math.round(Number(risk.score))}/100`
+                    : 'score unavailable'
+            } · ${safeText(risk.level, 'level unavailable')}`
+        );
+    }
+
+    if (risk.reason) {
+        lines.push(`Why: ${risk.reason}`);
+    }
+
+    if (risk.mlRiskPrediction) {
+        const pct = formatAIConfidencePercent(risk.mlConfidence);
+        lines.push(
+            `ML model: ${String(risk.mlRiskPrediction).toUpperCase()} risk${
+                pct !== null ? ` (${pct}% confidence)` : ''
+            }`
+        );
+    }
+
+    if (risk.anomalyDetected) {
+        lines.push('AI anomaly detector flagged unusual sensor behaviour.');
+    }
+
+    if (risk.recommendation) {
+        lines.push(`Recommended response: ${risk.recommendation}`);
+    }
+
+    return `
+        <div class="emergency-ai">
+            <strong>AI ANALYSIS (this alert's device):</strong>
+            ${lines.map(l => `<div>${l}</div>`).join('')}
+            <div class="emergency-ai-note">
+                AI output assists the operator — it never dispatches teams automatically.
+            </div>
+        </div>
+    `;
+}
+
+/**
+ * Chip switcher between simultaneously active SOS alerts.
+ * Hidden when there is a single alert (the existing layout is enough).
+ */
+function renderEmergencySwitcher(list) {
+    const switcher =
+        document.getElementById('emergency-switcher');
+
+    if (!switcher) return;
+
+    if (!list || list.length < 2) {
+        emergencyState.selectedDeviceId = null;
+        switcher.classList.add('hidden');
+        switcher.innerHTML = '';
+        return;
+    }
+
+    switcher.classList.remove('hidden');
+
+    const selected = emergencyState.selectedDeviceId;
+
+    const chips = [
+        `<button type="button" class="emg-chip ${
+            selected ? '' : 'active'
+        }" data-chip="">
+            All active (${list.length})
+        </button>`
+    ];
+
+    list.forEach(worker => {
+        const deviceId = worker.sensorData?.device_id;
+
+        chips.push(
+            `<button type="button" class="emg-chip ${
+                selected === deviceId ? 'active' : ''
+            }" data-chip="${escapeAttr(deviceId)}">
+                ${escapeAttr(
+                    worker.name || worker.workerId || deviceId
+                )}
+            </button>`
+        );
+    });
+
+    switcher.innerHTML = chips.join('');
+
+    switcher
+        .querySelectorAll('[data-chip]')
+        .forEach(chip => {
+            chip.addEventListener('click', () => {
+                const value = chip.getAttribute('data-chip');
+                emergencyState.selectedDeviceId = value || null;
+                emergencyRefresh();
+            });
+        });
 }
 
 window.emergencyToggleMinimize = function () {
@@ -471,6 +956,17 @@ window.emergencyToggleMinimize = function () {
 
 window.emergencyOpen = function () {
     emergencyState.minimized = false;
+    emergencyRefresh();
+};
+
+/**
+ * "Return to Dashboard" — minimizes Emergency Mode WITHOUT dismissing,
+ * resolving or losing the alert. The SOS stays active, the persistent
+ * banner keeps counting, and live updates keep arriving (the same
+ * refresh loop drives both views).
+ */
+window.emergencyReturnToDashboard = function () {
+    emergencyState.minimized = true;
     emergencyRefresh();
 };
 
@@ -511,7 +1007,7 @@ async function testBackendConnection() {
     try {
 
         const response =
-            await fetch("http://localhost:5002/");
+            await fetch(API_BASE_URL.replace(/\/api$/, "/"));
 
         if (response.ok) {
             console.log(
@@ -671,6 +1167,191 @@ async function resolveAlertOnBackend(alert) {
     }
 }
 
+// ==========================================================================
+// Device connection + movement state
+// ==========================================================================
+
+// Mirrors DEVICE_OFFLINE_SECONDS in config/rescueConfig.js (default 60s).
+// A device that has not reported inside this window is shown as OFFLINE.
+const DEVICE_OFFLINE_SECONDS = 60;
+
+/**
+ * Newest reading that can be trusted.
+ *
+ * A reading timestamped in the FUTURE means the reporting device's clock
+ * disagrees with this host. Such a row must not be treated as "the latest
+ * reading": it would keep the device pinned to ONLINE and it would hide the
+ * real last report. The newest sane reading is used instead, and the skew
+ * is reported so the dashboard can say so.
+ */
+function latestUsableReading(readings) {
+    const now = Date.now();
+    const list = readings || [];
+    const newest = list.length > 0 ? list[0] : null;
+    const newestMs = newest
+        ? new Date(newest.recorded_at || newest.created_at).getTime()
+        : NaN;
+    const clockSkew =
+        Number.isFinite(newestMs) && newestMs > now;
+    const usable =
+        list.find(r => {
+            const t = new Date(
+                r.recorded_at || r.created_at
+            ).getTime();
+            return Number.isFinite(t) && t <= now;
+        }) || null;
+    return { newest, usable, clockSkew };
+}
+
+/**
+ * Connection state of one device, derived from its real latest reading.
+ *
+ * A reading timestamped in the FUTURE cannot be trusted (the device clock
+ * and this host can disagree), so it is reported as stale rather than
+ * online — otherwise a device that stopped reporting hours ago would still
+ * look connected.
+ */
+function deviceConnection(reading, now = Date.now()) {
+
+    if (!reading) {
+        return {
+            online: false,
+            hasData: false,
+            lastSeen: null,
+            secondsAgo: null,
+            clockSkew: false
+        };
+    }
+
+    const raw = reading.recorded_at || reading.created_at;
+    const ms = new Date(raw).getTime();
+
+    if (!Number.isFinite(ms)) {
+        return {
+            online: false,
+            hasData: false,
+            lastSeen: null,
+            secondsAgo: null,
+            clockSkew: false
+        };
+    }
+
+    const secondsAgo = Math.round((now - ms) / 1000);
+    const clockSkew = secondsAgo < 0;
+
+    return {
+        online: !clockSkew && secondsAgo <= DEVICE_OFFLINE_SECONDS,
+        hasData: true,
+        lastSeen: new Date(ms).toISOString(),
+        secondsAgo,
+        clockSkew
+    };
+}
+
+/**
+ * Movement state of a miner.
+ *
+ * The MPU6050 accelerometer on the belt device is the ONLY movement source
+ * the system has — there is no separate tracker, beacon or pedometer. When
+ * a device reports no accelerometer values the state is "Unavailable"; it is
+ * never reported as "Idle", which would pretend a sensor is connected.
+ */
+function movementState(reading) {
+
+    const ax = reading ? reading.acceleration_x_ms2 : null;
+    const ay = reading ? reading.acceleration_y_ms2 : null;
+    const az = reading ? reading.acceleration_z_ms2 : null;
+
+    const hasAxes = [ax, ay, az].every(
+        v => typeof v === 'number' && Number.isFinite(v)
+    );
+
+    if (!hasAxes) {
+        return {
+            state: 'Unavailable',
+            active: false,
+            hasData: false,
+            magnitude: null
+        };
+    }
+
+    // Gravity is ~9.81 m/s² on Z for a standing miner. Movement shows up as
+    // horizontal acceleration or as a deviation from the gravity vector
+    // (which is what a fall looks like: Z drops towards 0).
+    const horizontal = Math.abs(ax) + Math.abs(ay);
+    const verticalDelta = Math.abs(az - 9.81);
+    const magnitude = Math.sqrt(
+        ax * ax + ay * ay + az * az
+    );
+    const active = horizontal > 0.5 || verticalDelta > 1.5;
+
+    return {
+        state: active ? 'Active' : 'Idle',
+        active,
+        hasData: true,
+        magnitude
+    };
+}
+
+/**
+ * Human label for the risk engine's fall/movement verdict.
+ * (risk-module/fallDetection.js → NORMAL | SUDDEN_MOVEMENT |
+ *  POSSIBLE_FALL | FALL_CONFIRMED)
+ */
+function fallStateLabel(fallState) {
+
+    switch (String(fallState || '').toUpperCase()) {
+        case 'FALL_CONFIRMED':
+            return { label: 'Fall confirmed', cls: 'text-critical' };
+        case 'POSSIBLE_FALL':
+            return { label: 'Possible fall', cls: 'text-critical' };
+        case 'SUDDEN_MOVEMENT':
+            return { label: 'Sudden movement', cls: 'text-warning' };
+        case 'NORMAL':
+            return { label: 'Normal movement', cls: 'text-safe' };
+        default:
+            return { label: 'Unavailable', cls: 'text-muted' };
+    }
+}
+
+/**
+ * Battery percentage as shown in the UI.
+ * A device that has never reported a battery level shows "n/a" — the
+ * dashboard never invents a full battery.
+ */
+function batteryLabel(value) {
+    return (typeof value === 'number' && Number.isFinite(value))
+        ? `${Math.round(value)}%`
+        : 'n/a';
+}
+
+/** "2 min ago" / "3 hr ago" / "never" for a device's last reading. */
+function lastSeenLabel(secondsAgo) {
+    if (secondsAgo === null || secondsAgo === undefined) {
+        return 'never reported';
+    }
+
+    if (secondsAgo < 0) {
+        return 'timestamp in the future (clock skew)';
+    }
+
+    if (secondsAgo < 60) {
+        return `${secondsAgo}s ago`;
+    }
+
+    const mins = Math.round(secondsAgo / 60);
+    if (mins < 60) {
+        return `${mins} min ago`;
+    }
+
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) {
+        return `${hrs} hr ago`;
+    }
+
+    return `${Math.round(hrs / 24)} d ago`;
+}
+
 async function loadWorkersFromBackend() {
 
     try {
@@ -736,6 +1417,10 @@ async function loadWorkersFromBackend() {
         const devices =
             devicesResult.data;
 
+        // Latest reading per device. Cached here so the device list below
+        // can reuse it instead of fetching the same device twice.
+        const deviceReadings = new Map();
+
         for (const worker of workers) {
 
             const device =
@@ -755,22 +1440,35 @@ async function loadWorkersFromBackend() {
             const sensorResult =
                 await sensorResponse.json();
 
-            // Backend returns newest FIRST.
-            // Therefore data[0] is the latest sensor reading.
+            deviceReadings.set(
+                device.device_id,
+                sensorResult
+            );
 
-            const latestSensor =
-                sensorResult.success &&
-                sensorResult.data.length
-                    ? sensorResult.data[0]
-                    : null;
+            // Backend returns newest FIRST.
+            // Therefore data[0] is the latest sensor reading — but a
+            // future-dated row (device clock disagrees with this host) is
+            // skipped, so the dashboard shows the newest real report.
+
+            const { usable: latestSensor, clockSkew } =
+                latestUsableReading(
+                    sensorResult.success
+                        ? sensorResult.data
+                        : []
+                );
 
             if (!latestSensor) continue;
 
             worker.workerId =
                 worker.worker_id;
 
+            // Battery: the freshest real report wins. If nothing reported
+            // a level the card shows "n/a" instead of a made-up 100%.
             worker.battery =
-                device.battery ?? 100;
+                (latestSensor.battery_level_percent ??
+                 latestSensor.battery ??
+                 device.battery ??
+                 null);
 
             worker.location =
                 worker.mine_location ||
@@ -781,6 +1479,17 @@ async function loadWorkersFromBackend() {
 
             worker.sensorHistory =
                 sensorResult.data;
+
+            worker.deviceId =
+                device.device_id;
+
+            worker.connection =
+                deviceConnection(latestSensor);
+
+            worker.clockSkew = clockSkew;
+
+            worker.movement =
+                movementState(latestSensor);
 
             if (latestSensor.sos === true) {
                 // Fallback-only synthetic SOS alert: at most ONE per device, and only
@@ -815,7 +1524,84 @@ async function loadWorkersFromBackend() {
                     worker.sensorData
             );
 
+        // ── Device connection list ─────────────────────────────
+        // Every registered device is listed here, INCLUDING devices that
+        // are not reporting: a silent device must stay visible instead of
+        // quietly disappearing from the dashboard.
+        const deviceNow = Date.now();
+        const deviceStates = [];
+
+        for (const device of devices) {
+
+            if (!deviceReadings.has(device.device_id)) {
+                // A device without a worker mapping (or a worker without
+                // sensor data) — read its latest reading explicitly so the
+                // device still shows up with an honest status.
+                try {
+                    const response = await fetch(
+                        `${API_BASE_URL}/sensor-data/${device.device_id}`,
+                        { headers }
+                    );
+                    deviceReadings.set(
+                        device.device_id,
+                        await response.json()
+                    );
+                } catch {
+                    deviceReadings.set(
+                        device.device_id,
+                        null
+                    );
+                }
+            }
+
+            const sensorResult =
+                deviceReadings.get(device.device_id);
+
+            const { usable: latest, clockSkew } =
+                latestUsableReading(
+                    sensorResult &&
+                    sensorResult.success &&
+                    sensorResult.data
+                        ? sensorResult.data
+                        : []
+                );
+
+            const worker =
+                workers.find(
+                    w => device.worker_id === w.id
+                );
+
+            const battery =
+                latest &&
+                latest.battery_level_percent !== null &&
+                latest.battery_level_percent !== undefined
+                    ? latest.battery_level_percent
+                    : (device.battery ?? null);
+
+            deviceStates.push({
+                device_id: device.device_id,
+                name: device.name || device.device_id,
+                location:
+                    device.location ||
+                    (worker && worker.mine_location) ||
+                    'Unknown',
+                worker: worker
+                    ? (worker.name || worker.worker_id)
+                    : null,
+                connection: deviceConnection(latest, deviceNow),
+                clockSkew,
+                movement: movementState(latest),
+                battery,
+                sos: !!(latest && latest.sos === true),
+                hasReading: !!latest
+            });
+        }
+
+        appState.devices = deviceStates;
+
         renderDashboard();
+
+        renderDeviceStatus();
 
         renderWorkersPage();
 
@@ -889,11 +1675,50 @@ async function loadRiskFromBackend() {
                 level:
                     latestRisk.risk_level,
 
+                // Movement verdict from the risk engine (fall detection).
+                fallState:
+                    latestRisk.fall_state,
+
                 reason:
                     latestRisk.reason,
 
                 createdAt:
-                    latestRisk.created_at
+                    latestRisk.created_at,
+
+                mlConfidence:
+                    latestRisk.ai?.mlConfidence,
+
+                mlRiskPrediction:
+                    latestRisk.ai?.mlRiskPrediction,
+
+                anomalyDetected:
+                    latestRisk.ai?.anomalyDetected,
+
+                anomalyScore:
+                    latestRisk.ai?.anomalyScore,
+
+                combinedScore:
+                    latestRisk.ai?.combinedScore,
+
+                source:
+                    latestRisk.ai?.source ??
+                    latestRisk.source,
+
+                recommendation:
+                    latestRisk.ai?.recommendation ??
+                    latestRisk.recommendation,
+
+                aiRiskFactors:
+                    latestRisk.ai?.aiRiskFactors ??
+                    latestRisk.aiRiskFactors,
+
+                stuckSensors:
+                    latestRisk.ai?.stuckSensors ??
+                    latestRisk.stuckSensors,
+
+                trendWarnings:
+                    latestRisk.ai?.trendWarnings ??
+                    latestRisk.trendWarnings
             };
         }
 
@@ -992,6 +1817,11 @@ async function loadRiskHistory() {
 
             const latestRisk = result.data[0];
 
+            // Remember the movement verdict per device so the device panel
+            // can show it even when the device has no worker card.
+            appState.deviceFallState[deviceId] =
+                latestRisk.fall_state;
+
             worker.aiRisk = {
 
                 score:
@@ -1002,11 +1832,50 @@ async function loadRiskHistory() {
                 level:
                     latestRisk.risk_level,
 
+                // Movement verdict from the risk engine (fall detection).
+                fallState:
+                    latestRisk.fall_state,
+
                 reason:
                     latestRisk.reason,
 
                 createdAt:
-                    latestRisk.created_at
+                    latestRisk.created_at,
+
+                mlConfidence:
+                    latestRisk.ai?.mlConfidence,
+
+                mlRiskPrediction:
+                    latestRisk.ai?.mlRiskPrediction,
+
+                anomalyDetected:
+                    latestRisk.ai?.anomalyDetected,
+
+                anomalyScore:
+                    latestRisk.ai?.anomalyScore,
+
+                combinedScore:
+                    latestRisk.ai?.combinedScore,
+
+                source:
+                    latestRisk.ai?.source ??
+                    latestRisk.source,
+
+                recommendation:
+                    latestRisk.ai?.recommendation ??
+                    latestRisk.recommendation,
+
+                aiRiskFactors:
+                    latestRisk.ai?.aiRiskFactors ??
+                    latestRisk.aiRiskFactors,
+
+                stuckSensors:
+                    latestRisk.ai?.stuckSensors ??
+                    latestRisk.stuckSensors,
+
+                trendWarnings:
+                    latestRisk.ai?.trendWarnings ??
+                    latestRisk.trendWarnings
             };
         }
 
@@ -1177,6 +2046,11 @@ async function loadRiskHistory() {
             const latestAiRisk =
                 latestWorker.aiRisk;
 
+            renderAIExtras(
+                latestAiRisk,
+                workersWithRisk
+            );
+
             const aiHeroMeta =
                 document.getElementById(
                     "ai-hero-meta"
@@ -1185,13 +2059,16 @@ async function loadRiskHistory() {
             if (aiHeroMeta) {
 
                 aiHeroMeta.innerText =
-                    latestAiRisk?.createdAt
+                    (latestAiRisk?.createdAt
                         ? `Latest analysis · ${
                             new Date(
                                 latestAiRisk.createdAt
                             ).toLocaleTimeString()
                           }`
-                        : "Latest risk engine analysis";
+                        : "Latest risk engine analysis") +
+                    (latestAiRisk?.mlRiskPrediction
+                        ? ` · AI: ${latestAiRisk.mlRiskPrediction}`
+                        : "");
             }
 
             const aiModelConfidence =
@@ -1201,11 +2078,26 @@ async function loadRiskHistory() {
 
             if (aiModelConfidence) {
 
-                aiModelConfidence.innerText =
-                    "--";
+                if (
+                    latestAiRisk?.mlConfidence != null
+                ) {
 
-                aiModelConfidence.title =
-                    "Confidence not provided by the risk API";
+                    aiModelConfidence.innerText =
+                        `${Math.round(
+                            latestAiRisk.mlConfidence * 100
+                        )}%`;
+
+                    aiModelConfidence.title =
+                        "ML model confidence from the risk API";
+
+                } else {
+
+                    aiModelConfidence.innerText =
+                        "--";
+
+                    aiModelConfidence.title =
+                        "Confidence not provided by the risk API";
+                }
             }
 
             const aiLastUpdated =
@@ -1241,6 +2133,19 @@ async function loadRiskHistory() {
                                 part.trim()
                         )
                         .filter(Boolean);
+
+                if (
+                    latestAiRisk?.anomalyDetected === true
+                ) {
+
+                    reasons.unshift(
+                        `Anomalous sensor pattern detected${
+                            latestAiRisk.anomalyScore != null
+                                ? ` (score ${latestAiRisk.anomalyScore})`
+                                : ""
+                        }`
+                    );
+                }
 
                 aiFactorsList.innerHTML =
                     reasons.length
@@ -1307,6 +2212,13 @@ const appState = {
 
     workers: [],
 
+    // Live connection state for every registered device (including devices
+    // that are NOT reporting — those must stay visible, not disappear).
+    devices: [],
+
+    // Movement/fall verdict per device, from the risk engine.
+    deviceFallState: {},
+
     alerts: [],
 
     charts: {
@@ -1341,6 +2253,10 @@ const appState = {
     renderActivityLog();
 
 })();
+
+// ==========================================================================
+// Authentication
+// ==========================================================================
 
 // ==========================================================================
 // Authentication
@@ -1382,6 +2298,11 @@ function setAuthenticated(user) {
         'tag-status',
         `User "${user}" signed in to the control room`
     );
+
+    // Rescue layer hook: resolve role backend-side and route to portal
+    if (window.onAvighnaaLogin) {
+        window.onAvighnaaLogin(user);
+    }
 }
 
 function signOut() {
@@ -1420,6 +2341,10 @@ function signOut() {
         'tag-status',
         'Control room session ended'
     );
+
+    if (window.onAvighnaaLogout) {
+        window.onAvighnaaLogout();
+    }
 
     updateOperatorDisplay();
 }
@@ -1530,8 +2455,215 @@ window.handleLoginSubmit =
         }
     };
 
-window.signOut =
-    signOut;
+// ─── Rescue layer: session + role resolution ───────────────────
+// Single source of truth. rescue.js listens for the
+// 'avighnaa:session' / 'avighnaa:logout' events instead of
+// redefining these hooks (two definitions silently fought before).
+window.avighnaaRole = null;   // 'user' | 'rescue_team'
+window.avighnaaTeam = null;   // e.g. 'RT-01'
+window.avighnaaEmail = null;
+
+// Which portal the user picked on the login screen. The REAL role always
+// wins — this only lets us tell someone "this account is not a rescue
+// account" instead of silently dropping them somewhere unexpected.
+window.avighnaaLoginIntent = 'user';
+
+// AVIGHNAA has exactly two portals. There is no admin role.
+const LOGIN_INTENT_COPY = {
+    user: {
+        title: 'User Login',
+        sub: 'Sign in to access the control-room dashboard and request rescue when an emergency is detected.',
+    },
+    rescue_team: {
+        title: 'Rescue Team Access',
+        sub: 'Sign in with your rescue-team account. Role is verified on the server.',
+    },
+};
+
+/**
+ * Wire the USER / ADMIN / RESCUE TEAM buttons on the login overlay.
+ * Selecting one only changes the wording — authentication and the final
+ * portal are always decided by the server-verified role.
+ */
+function setupLoginRoleButtons() {
+    const note = document.getElementById('login-role-note');
+    const title = document.querySelector('.login-title');
+    const sub = document.querySelector('.login-sub');
+
+    document.querySelectorAll('[data-login-role]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const intent = btn.getAttribute('data-login-role');
+            window.avighnaaLoginIntent = intent;
+
+            document.querySelectorAll('[data-login-role]').forEach((b) =>
+                b.classList.toggle('active', b === btn)
+            );
+
+            const copy = LOGIN_INTENT_COPY[intent];
+            if (copy) {
+                if (title) title.textContent = copy.title;
+                if (sub) sub.innerHTML = copy.sub;
+            }
+            if (note) {
+                note.textContent =
+                    intent === 'rescue_team'
+                        ? 'Emergency response portal — role verified on the server.'
+                        : 'You will only reach the portal matching your account role.';
+            }
+        });
+    });
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupLoginRoleButtons);
+} else {
+    setupLoginRoleButtons();
+}
+
+// Which roles may open which page. Pages not listed are open to everyone.
+// This is UI-side defence only — every sensitive endpoint is also
+// enforced server-side by requireRole() in routes/*Routes.js.
+const AVIGHNAA_ROLE_RULES = {
+    // Control-room pages (USER)
+    dashboard:   ['user'],
+    workers:     ['user'],
+    alerts:      ['user'],
+    soshistory:  ['user'],
+    analytics:   ['user'],
+    settings:    ['user'],
+    // Rescue pages (RESCUE_TEAM)
+    rescue:        ['rescue_team'],
+    rescuecontrol: ['rescue_team'],
+    history:       ['rescue_team'],
+    equipment:     ['rescue_team'],
+    equipmentcheck: ['rescue_team'],
+};
+
+// Page each role lands on after login.
+const AVIGHNAA_HOME_PAGE = {
+    user: 'dashboard',
+    rescue_team: 'rescue',
+};
+
+window.rescueCanOpen = function (target) {
+    if (!appState.auth.authenticated) return false;
+    const allowed = AVIGHNAA_ROLE_RULES[target];
+    if (!allowed) return true;                    // page has no role requirement
+    if (!window.avighnaaRole) return true;        // role not resolved yet - don't lock out
+    return allowed.includes(window.avighnaaRole);
+};
+
+function announceRescueSession(detail) {
+    window.dispatchEvent(new CustomEvent('avighnaa:session', { detail: detail }));
+}
+
+window.onAvighnaaLogin = async function (userEmail) {
+    const goTo = (target, title) => {
+        const link = document.querySelector(`[data-target="${target}"]`);
+        if (link) link.click();
+        const titleEl = document.getElementById('page-title');
+        // If the nav click was blocked by the role guard, fix the title anyway.
+        if (titleEl && !link?.classList.contains('active')) {
+            titleEl.innerText = title;
+        }
+    };
+
+    // getSession() is ASYNC - reading `.data.session` off the returned
+    // Promise always gave undefined, so every login fell back to Dashboard.
+    let token = null;
+    try {
+        const { data } = await supabaseClient.auth.getSession();
+        token = data?.session?.access_token ?? null;
+    } catch (err) {
+        console.error('❌ Could not read session:', err);
+    }
+
+    if (!token) {
+        window.avighnaaRole = null;
+        window.avighnaaTeam = null;
+        announceRescueSession({ role: null, teamId: null, email: userEmail || null });
+        goTo('dashboard', 'Dashboard');
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API_BASE_URL}/auth/me`, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        const payload = await res.json();
+
+        // The endpoint replies { success, data: { role, team_id, ... } }.
+        // Accept either shape so a backend change can't silently break routing.
+        const me = (payload && typeof payload.data === 'object' && payload.data)
+            ? payload.data
+            : (payload || {});
+
+        const role = me.role || 'user';
+
+        // Role separation: if the user picked a portal that does not match
+        // their real role, refuse the session instead of silently redirecting
+        // them somewhere they did not ask for (and did not have access to).
+        const intent = window.avighnaaLoginIntent;
+        if (intent && intent !== role) {
+            const label = LOGIN_INTENT_COPY[intent] ? intent : 'that';
+            console.warn(`⛔ Login intent "${intent}" does not match real role "${role}"`);
+            try {
+                await supabaseClient.auth.signOut();
+            } catch { /* ignore */ }
+            window.avighnaaRole = null;
+            window.avighnaaTeam = null;
+            window.avighnaaLoginIntent = 'user';
+            const errEl = document.getElementById('login-error');
+            if (errEl) {
+                errEl.textContent =
+                    `This account is not authorised for the ${label} portal ` +
+                    `(its role is "${role}"). Please use the correct login.`;
+                errEl.classList.remove('hidden');
+            }
+            if (typeof signOut === 'function') signOut();
+            return;
+        }
+
+        window.avighnaaRole = role;
+        window.avighnaaTeam = me.team_id || me.teamId || null;
+        window.avighnaaEmail = me.email || userEmail || null;
+
+        announceRescueSession({
+            role: role,
+            teamId: window.avighnaaTeam,
+            email: window.avighnaaEmail
+        });
+
+        const home = AVIGHNAA_HOME_PAGE[role] || 'dashboard';
+
+        if (role === 'rescue_team') {
+            goTo('rescue', 'Rescue Team Portal');
+            addLogEntry('STATUS', 'tag-status',
+                `Rescue Team role active for ${window.avighnaaEmail} (team ${window.avighnaaTeam || 'unassigned'})`);
+        } else {
+            goTo(home, 'Dashboard');
+            addLogEntry('STATUS', 'tag-status',
+                `Signed in as control-room user ${window.avighnaaEmail}`);
+        }
+    } catch (err) {
+        console.error('❌ Failed to resolve role:', err);
+        window.avighnaaRole = null;
+        announceRescueSession({ role: null, teamId: null, email: userEmail || null });
+        goTo('dashboard', 'Dashboard');
+    }
+};
+
+window.onAvighnaaLogout = function () {
+    window.avighnaaRole = null;
+    window.avighnaaTeam = null;
+    window.avighnaaEmail = null;
+    window.dispatchEvent(new CustomEvent('avighnaa:logout'));
+};
+
+// ==========================================================================
+// Navigation
+// ==========================================================================
+    
 
 // ==========================================================================
 // Navigation
@@ -1546,6 +2678,17 @@ document
             e => {
 
                 e.preventDefault();
+
+                // Rescue layer guard: block role-restricted pages early
+                const guardTarget =
+                    e.currentTarget.getAttribute('data-target');
+
+                if (
+                    window.rescueCanOpen &&
+                    !window.rescueCanOpen(guardTarget)
+                ) {
+                    return;
+                }
 
                 document
                     .querySelectorAll(
@@ -1597,11 +2740,29 @@ document
                     alerts:
                         'System Alerts & AI Intelligence',
 
+                    soshistory:
+                        'SOS History',
+
                     analytics:
                         'Sensor Analytics',
 
                     settings:
-                        'System Settings'
+                        'System Settings',
+
+                    rescue:
+                        'Rescue Team Portal',
+
+                    history:
+                        'Rescue History & Analytics',
+
+                    rescuecontrol:
+                        'Rescue Control',
+
+                    equipment:
+                        'Rescue Equipment',
+
+                    equipmentcheck:
+                        'Pre-Departure Equipment Check'
                 };
 
                 document.getElementById(
@@ -1917,7 +3078,7 @@ window.openModal =
                     </div>
 
                     <div class="detail-value">
-                        ${worker.battery}%
+                        ${batteryLabel(worker.battery)}
                         /
                         ${
                             d.sos
@@ -2018,6 +3179,43 @@ document
         }
     );
 
+
+function renderModalLiveTracking() {
+
+    const workerId =
+        document.getElementById(
+            'modal-worker-name'
+        ).innerText.split(' ')[0] +
+        ' ' +
+        document.getElementById(
+            'modal-worker-name'
+        ).innerText.split(' ')[1];
+
+    const worker =
+        appState.workers.find(
+            w => w.workerId === workerId
+        );
+
+    if (!worker) return;
+
+    const d = worker.sensorData;
+
+    const body =
+        document.getElementById('modal-worker-body');
+
+    if (!body) return;
+
+    let block =
+        body.querySelector('.live-tracking');
+
+    const html = `
+            <div class="live-tracking">
+
+                <div class="live-tracking-head">
+
+                    <strong>Live Tracking</strong>
+
+                    <span class="badge badge-info">Real-time</span>
 
             </div>
 
@@ -2129,6 +3327,356 @@ document
 // Dashboard Rendering
 // ==========================================================================
 
+// ==========================================================================
+// Core Status Helpers (restored after merge corruption)
+// ==========================================================================
+
+function evaluateStatus(worker) {
+
+    const s =
+        appState.settings;
+
+    const d =
+        worker.sensorData;
+
+    let status = 'SAFE';
+    let risk = 20;
+
+    if (
+        d.temperature_c >= s.tempCrit ||
+        d.gas_raw >= s.gasCrit ||
+        d.water_level_cm >= s.waterCrit ||
+        d.sos
+    ) {
+
+        status = 'CRITICAL';
+        risk = 90;
+
+    } else if (
+        d.temperature_c >= s.tempWarn ||
+        d.gas_raw >= s.gasWarn ||
+        d.water_level_cm >= s.waterWarn
+    ) {
+
+        status = 'WARNING';
+        risk = 60;
+    }
+
+    return {
+        status,
+        risk
+    };
+}
+
+function getBadgeClass(status) {
+
+    return status === 'SAFE'
+        ? 'badge-safe'
+        : status === 'WARNING'
+        ? 'badge-warning'
+        : 'badge-critical';
+}
+
+function getStatusColor(status) {
+
+    return status === 'SAFE'
+        ? 'text-safe'
+        : status === 'WARNING'
+        ? 'text-warning'
+        : 'text-critical';
+}
+
+// ==========================================================================
+// Activity Log
+// ==========================================================================
+
+function addLogEntry(
+    tag,
+    tagClass,
+    msg
+) {
+
+    const ts =
+        new Date();
+
+    appState.activityLog.unshift({
+
+        ts,
+        tag,
+        tagClass,
+        msg
+    });
+
+    if (
+        appState.activityLog.length >
+        200
+    ) {
+        appState.activityLog.length =
+            200;
+    }
+
+    appState.logSeq++;
+
+    renderActivityLog();
+}
+
+function renderActivityLog() {
+
+    const container =
+        document.getElementById(
+            'activity-log-container'
+        );
+
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    appState.activityLog.forEach(
+        e => {
+
+            const ts =
+                e.ts.toLocaleTimeString();
+
+            const div =
+                document.createElement(
+                    'div'
+                );
+
+            div.className =
+                'log-entry';
+
+            div.innerHTML = `
+                <span class="log-ts">
+                    ${ts}
+                </span>
+
+                <span class="log-msg">
+
+                    <span
+                        class="log-tag ${e.tagClass}"
+                    >
+                        ${e.tag}
+                    </span>
+
+                    ${e.msg}
+
+                </span>
+            `;
+
+            container.appendChild(
+                div
+            );
+        }
+    );
+
+    const countEl =
+        document.getElementById(
+            'activity-log-count'
+        );
+
+    if (countEl) {
+
+        countEl.innerText =
+            appState.activityLog.length +
+            ' entries';
+    }
+}
+
+function logAlertAsEvent(
+    alert
+) {
+
+    if (
+        !appState.settings.logAlerts
+    ) {
+        return;
+    }
+
+    addLogEntry(
+        'ALERT',
+        'tag-alert',
+        `${alert.type}: ${alert.msg} (Worker ${alert.worker}, Belt ${alert.belt})`
+    );
+}
+
+// ==========================================================================
+// Dashboard Rendering
+// ==========================================================================
+
+/**
+ * Renders the live device connection list and refreshes the sidebar
+ * system status.
+ *
+ * Everything shown here comes from the real readings loaded by
+ * loadWorkersFromBackend() — a device that is not reporting is shown as
+ * offline / no data, never as connected.
+ */
+function renderDeviceStatus() {
+
+    const devices = appState.devices || [];
+
+    const onlineCount =
+        devices.filter(
+            d => d.connection.online
+        ).length;
+
+    const total = devices.length;
+
+    const sosCount =
+        devices.filter(d => d.sos).length;
+
+    // ── Sidebar system status (real, not a hardcoded claim) ──
+    const titleEl = document.getElementById('sidebar-status-title');
+    const descEl = document.getElementById('sidebar-status-desc');
+    const dotEl = document.querySelector(
+        '.system-status-footer .status-indicator'
+    );
+
+    if (titleEl) {
+        titleEl.classList.remove(
+            'is-warning',
+            'is-critical'
+        );
+
+        if (total === 0) {
+            titleEl.textContent = 'No devices registered';
+            titleEl.classList.add('is-warning');
+        } else if (onlineCount === 0) {
+            titleEl.textContent = 'Devices offline';
+            titleEl.classList.add('is-critical');
+        } else if (onlineCount < total) {
+            titleEl.textContent = 'Partial connectivity';
+            titleEl.classList.add('is-warning');
+        } else {
+            titleEl.textContent = 'System operational';
+        }
+    }
+
+    if (descEl) {
+        if (total === 0) {
+            descEl.textContent = 'Waiting for device registry';
+        } else {
+            descEl.textContent =
+                `${onlineCount} of ${total} device${total === 1 ? '' : 's'} online` +
+                (sosCount ? ` · ${sosCount} in SOS` : '');
+        }
+    }
+
+    if (dotEl) {
+        dotEl.classList.remove(
+            'safe-pulse',
+            'warning-pulse',
+            'critical-pulse'
+        );
+
+        if (total === 0) {
+            dotEl.classList.add('warning-pulse');
+        } else if (onlineCount === 0) {
+            dotEl.classList.add('critical-pulse');
+        } else if (onlineCount < total) {
+            dotEl.classList.add('warning-pulse');
+        } else {
+            dotEl.classList.add('safe-pulse');
+        }
+    }
+
+    // ── Device list panel ────────────────────────────────────
+    const container =
+        document.getElementById(
+            'dashboard-devices-container'
+        );
+
+    if (!container) return;
+
+    if (total === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <i data-lucide="cpu"></i>
+                <strong>No devices registered</strong>
+                <span>
+                    The backend has no device records yet.
+                </span>
+            </div>
+        `;
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+        return;
+    }
+
+    container.innerHTML = devices.map(d => {
+        const conn = d.connection;
+        const cls = conn.online
+            ? 'is-online'
+            : (conn.hasData ? 'is-offline' : 'is-unknown');
+        const label = conn.online
+            ? 'ONLINE'
+            : (conn.hasData ? 'OFFLINE' : 'NO DATA');
+
+        const chips = [];
+
+        if (d.sos) {
+            chips.push(
+                '<span class="device-chip is-sos">🆘 SOS</span>'
+            );
+        }
+
+        if (d.clockSkew) {
+            chips.push(
+                '<span class="device-chip is-active">⚠ Clock skew</span>'
+            );
+        }
+
+        if (d.movement.hasData) {
+            chips.push(
+                `<span class="device-chip${d.movement.active ? ' is-active' : ''}">` +
+                `Motion: ${d.movement.state}</span>`
+            );
+        } else {
+            chips.push(
+                '<span class="device-chip">Motion: unavailable</span>'
+            );
+        }
+
+        const fall = fallStateLabel(
+            appState.deviceFallState[d.device_id]
+        );
+
+        if (fall.label !== 'Unavailable') {
+            chips.push(
+                `<span class="device-chip${fall.label === 'Normal movement' ? '' : ' is-fall'}">` +
+                `${fall.label}</span>`
+            );
+        }
+
+        const battery =
+            typeof d.battery === 'number'
+                ? `${Math.round(d.battery)}%`
+                : 'not reported';
+
+        return `
+            <div class="device-card ${cls}">
+                <div class="device-card-head">
+                    <span class="device-card-id">${d.device_id}</span>
+                    <span class="device-status ${cls}">
+                        <span class="device-dot"></span>${label}
+                    </span>
+                </div>
+                <div class="device-card-where">
+                    📍 ${d.location}${d.worker ? ` · ${d.worker}` : ''}
+                </div>
+                <div class="device-card-row">
+                    <span>Last seen: ${lastSeenLabel(conn.secondsAgo)}</span>
+                    <span>Battery: ${battery}</span>
+                </div>
+                <div class="device-card-row">
+                    ${chips.join(' ')}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
 function renderDashboard() {
 
     const container =
@@ -2218,17 +3766,19 @@ function renderDashboard() {
             sumWater +=
                 d.water_level_cm;
 
+            // Movement comes from the belt's MPU6050 accelerometer.
+            // When a device reports no accelerometer values the state is
+            // "Unavailable" — never "Idle", which would pretend a sensor
+            // is connected.
+            const movement =
+                movementState(d);
+
             const isMotion =
-                (
-                    Math.abs(
-                        d.acceleration_x_ms2
-                    ) +
-                    Math.abs(
-                        d.acceleration_y_ms2
-                    )
-                ) > 0.5
-                    ? 'Active'
-                    : 'Idle';
+                movement.state;
+
+            const fall = fallStateLabel(
+                worker.aiRisk?.fallState
+            );
 
             const card =
                 document.createElement(
@@ -2258,6 +3808,10 @@ function renderDashboard() {
                             Belt: ${d.device_id}
                         </span>
 
+                        <span>
+                            Zone: ${worker.location || 'Unknown'}
+                        </span>
+
                     </div>
 
                     <div
@@ -2267,6 +3821,29 @@ function renderDashboard() {
                         ${
                             d.sos
                                 ? '<span class="badge badge-sos">SOS</span>'
+                                : ''
+                        }
+
+                        ${
+                            worker.connection
+                                ? `<span class="badge ${
+                                    worker.connection.online
+                                        ? 'badge-safe'
+                                        : 'badge-warning'
+                                }">${
+                                    worker.connection.online
+                                        ? 'ONLINE'
+                                        : 'OFFLINE'
+                                }</span>`
+                                : ''
+                        }
+
+                        ${
+                            fall.label !== 'Normal movement' &&
+                            fall.label !== 'Unavailable'
+                                ? `<span class="badge badge-critical">${
+                                    fall.label.toUpperCase()
+                                }</span>`
                                 : ''
                         }
 
@@ -2344,7 +3921,7 @@ function renderDashboard() {
                         <span class="metric-value">
                             ${isMotion}
                             /
-                            ${worker.battery}%
+                            ${batteryLabel(worker.battery)}
                         </span>
 
                     </div>
@@ -2608,7 +4185,7 @@ function renderWorkersPage() {
                 </td>
 
                 <td class="data-font">
-                    ${worker.battery}%
+                    ${batteryLabel(worker.battery)}
                 </td>
 
                 <td
@@ -2780,7 +4357,7 @@ function renderAlerts() {
             };
 
             const lowerType =
-                alert.type.toLowerCase();
+                (alert.type || 'INFO').toLowerCase();
 
             const aiHtml =
                 alert.aiAction
@@ -2985,27 +4562,37 @@ function renderAlerts() {
             strip.style.display =
                 'none';
         }
-    }
+    }    const sidebarBadge =
+        document.getElementById('sidebar-alert-badge');
 
-    const sidebarBadge =
-        document.getElementById(
-            'sidebar-alert-badge'
-        );
-
-    if (
-        activeCount > 0
-    ) {
+    if (activeCount > 0) {
 
         sidebarBadge.style.display =
             'inline-block';
 
-        sidebarBadge.innerText =
-            activeCount;
+        sidebarBadge.innerText = activeCount;
 
     } else {
 
         sidebarBadge.style.display =
             'none';
+    }
+
+    // Persistent SOS indicator on the "SOS History" nav item — stays
+    // visible for as long as any SOS alert is unacknowledged, whatever
+    // page the admin is on.
+    const sosBadge =
+        document.getElementById('sidebar-sos-badge');
+
+    if (sosBadge) {
+        if (activeSOSCount > 0) {
+            sosBadge.style.display =
+                'inline-block';
+            sosBadge.innerText = activeSOSCount;
+        } else {
+            sosBadge.style.display =
+                'none';
+        }
     }
 
     document.getElementById(
@@ -3453,6 +5040,167 @@ function initCharts() {
 }
 
 // ==========================================================================
+// ==========================================================================
+// Chart Refresh (in place, no re-create)
+// ==========================================================================
+
+function refreshCharts() {
+
+    // Nothing to do until the analytics charts have been initialised.
+    if (
+        !appState.charts.temp &&
+        !appState.charts.gas &&
+        !appState.charts.water &&
+        !appState.charts.risk
+    ) {
+        return;
+    }
+
+    const allReadings =
+        appState.workers
+            .flatMap(
+                worker =>
+                    worker.sensorHistory ||
+                    []
+            )
+            .filter(
+                reading =>
+                    reading.recorded_at
+            )
+            .sort(
+                (a, b) =>
+                    new Date(
+                        a.recorded_at
+                    ) -
+                    new Date(
+                        b.recorded_at
+                    )
+            );
+
+    const tenMinutesAgo =
+        Date.now() -
+        (
+            10 *
+            60 *
+            1000
+        );
+
+    let readings =
+        allReadings.filter(
+            reading =>
+                new Date(
+                    reading.recorded_at
+                ).getTime() >=
+                tenMinutesAgo
+        );
+
+    if (
+        readings.length < 2
+    ) {
+
+        readings =
+            allReadings.slice(-6);
+    }
+
+    const labels =
+        readings.map(
+            reading =>
+                new Date(
+                    reading.recorded_at
+                ).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                })
+        );
+
+    const riskReadings =
+        appState.riskHistory
+            .filter(
+                risk =>
+                    risk.created_at
+            )
+            .sort(
+                (a, b) =>
+                    new Date(
+                        a.created_at
+                    ) -
+                    new Date(
+                        b.created_at
+                    )
+            )
+            .slice(-6);
+
+    const riskLabels =
+        riskReadings.map(
+            risk =>
+                new Date(
+                    risk.created_at
+                ).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                })
+        );
+
+    const updateChart =
+        (
+            chart,
+            chartLabels,
+            data
+        ) => {
+
+            if (!chart) return;
+
+            chart.data.labels =
+                chartLabels;
+
+            chart.data.datasets[0].data =
+                data;
+
+            chart.update();
+        };
+
+    updateChart(
+        appState.charts.risk,
+        riskLabels,
+        riskReadings.map(
+            r =>
+                r.risk_score ??
+                0
+        )
+    );
+
+    updateChart(
+        appState.charts.temp,
+        labels,
+        readings.map(
+            r =>
+                r.temperature_c ??
+                0
+        )
+    );
+
+    updateChart(
+        appState.charts.gas,
+        labels,
+        readings.map(
+            r =>
+                r.gas_raw ??
+                0
+        )
+    );
+
+    updateChart(
+        appState.charts.water,
+        labels,
+        readings.map(
+            r =>
+                r.water_level_cm ??
+                0
+        )
+    );
+}
+
+// ==========================================================================
 // DOM Ready
 // ==========================================================================
 
@@ -3506,21 +5254,6 @@ document.addEventListener(
     }
 );
 
-
-    if (
-        appState.auth.authenticated &&
-        appState.auth.username
-    ) {
-
-        el.innerText =
-            appState.auth.username;
-
-    } else {
-
-        el.innerText =
-            'Operator';
-    }
-}
 
    function updateOperatorDisplay() {
        const el = document.getElementById('operator-display');

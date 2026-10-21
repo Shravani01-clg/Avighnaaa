@@ -113,6 +113,32 @@
 
                 </form>
 
+                <div class="login-alt">
+                    <p class="login-alt-label">Sign in as</p>
+                    <div class="login-role-row">
+                        <button
+                            type="button"
+                            class="btn btn-role active"
+                            id="role-btn-user"
+                            data-login-role="user"
+                        >
+                            👤 USER
+                        </button>
+                        <button
+                            type="button"
+                            class="btn btn-rescue login-rescue-btn"
+                            id="rescue-login-btn"
+                            data-login-role="rescue_team"
+                        >
+                            🚒 RESCUE TEAM
+                        </button>
+                    </div>
+                    <p class="login-alt-note" id="login-role-note">
+                        Control-room user dashboard. The account role is verified on the
+                        server &mdash; the portal you reach always matches your real role.
+                    </p>
+                </div>
+
             </div>
         </div>
     </div>
@@ -150,6 +176,7 @@
                     href="#"
                     class="nav-item active"
                     data-target="dashboard"
+                    data-roles="user"
                 >
                     <i data-lucide="layout-dashboard"></i>
                     Dashboard
@@ -159,6 +186,7 @@
                     href="#"
                     class="nav-item"
                     data-target="workers"
+                    data-roles="user"
                 >
                     <i data-lucide="users"></i>
                     Workers
@@ -168,6 +196,7 @@
                     href="#"
                     class="nav-item"
                     data-target="alerts"
+                    data-roles="user"
                 >
                     <i data-lucide="triangle-alert"></i>
                     Alerts
@@ -184,7 +213,26 @@
                 <a
                     href="#"
                     class="nav-item"
+                    data-target="soshistory"
+                    data-roles="user"
+                >
+                    <i data-lucide="history"></i>
+                    SOS History
+
+                    <span
+                        id="sidebar-sos-badge"
+                        class="badge badge-critical"
+                        style="display: none;"
+                    >
+                        0
+                    </span>
+                </a>
+
+                <a
+                    href="#"
+                    class="nav-item"
                     data-target="analytics"
+                    data-roles="user"
                 >
                     <i data-lucide="activity"></i>
                     Analytics
@@ -194,9 +242,70 @@
                     href="#"
                     class="nav-item"
                     data-target="settings"
+                    data-roles="user"
                 >
                     <i data-lucide="settings"></i>
                     Settings
+                </a>
+
+                <!-- Rescue layer nav (role-gated by rescue.js) -->
+                <div class="nav-divider">EMERGENCY RESPONSE</div>
+
+                <a
+                    href="#"
+                    class="nav-item nav-rescue hidden"
+                    data-target="rescue"
+                    data-roles="rescue_team"
+                >
+                    <i data-lucide="siren"></i>
+                    Rescue Portal
+                    <span
+                        id="sidebar-incident-badge"
+                        class="badge badge-critical"
+                        style="display: none;"
+                    >
+                        0
+                    </span>
+                </a>
+
+                <a
+                    href="#"
+                    class="nav-item nav-rescue hidden"
+                    data-target="history"
+                    data-roles="rescue_team"
+                >
+                    <i data-lucide="history"></i>
+                    Rescue History
+                </a>
+
+                <a
+                    href="#"
+                    class="nav-item nav-rescue hidden"
+                    data-target="rescuecontrol"
+                    data-roles="rescue_team"
+                >
+                    <i data-lucide="radio-tower"></i>
+                    Rescue Control
+                </a>
+
+                <a
+                    href="#"
+                    class="nav-item nav-rescue hidden"
+                    data-target="equipment"
+                    data-roles="rescue_team"
+                >
+                    <i data-lucide="package"></i>
+                    Rescue Equipment
+                </a>
+
+                <a
+                    href="#"
+                    class="nav-item nav-rescue hidden"
+                    data-target="equipmentcheck"
+                    data-roles="rescue_team"
+                >
+                    <i data-lucide="clipboard-check"></i>
+                    Equipment Checklist
                 </a>
 
             </nav>
@@ -210,12 +319,18 @@
 
                     <div class="status-text">
 
-                        <span class="status-title">
-                            System Operational
+                        <span
+                            class="status-title"
+                            id="sidebar-status-title"
+                        >
+                            Checking devices…
                         </span>
 
-                        <span class="status-desc">
-                            All devices online
+                        <span
+                            class="status-desc"
+                            id="sidebar-status-desc"
+                        >
+                            Reading live device state
                         </span>
 
                     </div>
@@ -294,6 +409,98 @@
                 id="page-dashboard"
                 class="page active"
             >
+
+                <!-- ==============================================
+                     RESCUE RESPONSE — EMERGENCY PANEL
+                     Reads the SAME backend incident state as the
+                     rescue portal and admin console. Hidden when
+                     there is no active emergency.
+                     ============================================== -->
+                <section
+                    id="dashboard-emergency"
+                    class="dash-emergency hidden"
+                >
+                    <div class="dash-emergency-head">
+                        <span class="dash-emergency-title">
+                            <span id="dash-emergency-icon">🚨</span>
+                            <span id="dash-emergency-heading">EMERGENCY DETECTED</span>
+                        </span>
+                        <span
+                            class="badge badge-critical"
+                            id="dash-emergency-sev"
+                        >CRITICAL</span>
+                    </div>
+
+                    <div class="dash-emergency-grid">
+                        <div class="dash-emergency-item">
+                            <span class="de-label">Incident</span>
+                            <span class="de-value" id="dash-emergency-id">—</span>
+                        </div>
+                        <div class="dash-emergency-item">
+                            <span class="de-label">Hazard</span>
+                            <span class="de-value" id="dash-emergency-hazard">—</span>
+                        </div>
+                        <div class="dash-emergency-item">
+                            <span class="de-label">Location</span>
+                            <span class="de-value" id="dash-emergency-location">—</span>
+                        </div>
+                        <div class="dash-emergency-item">
+                            <span class="de-label">Person detected</span>
+                            <span class="de-value" id="dash-emergency-person">—</span>
+                        </div>
+                        <div class="dash-emergency-item">
+                            <span class="de-label">Detected</span>
+                            <span class="de-value" id="dash-emergency-time">—</span>
+                        </div>
+                        <div class="dash-emergency-item">
+                            <span class="de-label">Assigned team</span>
+                            <span class="de-value" id="dash-emergency-team">—</span>
+                        </div>
+                    </div>
+
+                    <div class="dash-emergency-status">
+                        <span class="de-label">Rescue status</span>
+                        <span class="de-value" id="dash-emergency-status">Awaiting rescue request</span>
+                    </div>
+
+                    <!-- Latest recorded rescue response for THIS incident
+                         (filled from /incidents/:id/timeline — real events only) -->
+                    <div
+                        class="dash-emergency-latest hidden"
+                        id="dash-emergency-latest"
+                    >
+                        <span class="de-label">Latest response</span>
+                        <span class="de-value" id="dash-emergency-latest-text">—</span>
+                    </div>
+
+                    <div class="dash-emergency-actions">
+                        <button
+                            type="button"
+                            class="btn btn-rescue"
+                            id="dash-request-rescue"
+                        >
+                            🚒 REQUEST RESCUE TEAM
+                        </button>
+                        <button
+                            type="button"
+                            class="btn btn-secondary"
+                            id="dash-view-incident"
+                        >
+                            VIEW INCIDENT
+                        </button>
+                        <button
+                            type="button"
+                            class="btn btn-secondary"
+                            id="dash-open-sos-detail"
+                        >
+                            OPEN SOS DETAILS
+                        </button>
+                        <span
+                            class="dash-emergency-msg"
+                            id="dash-emergency-msg"
+                        ></span>
+                    </div>
+                </section>
 
                 <!-- SUMMARY CARDS -->
                 <div class="summary-grid">
@@ -419,6 +626,36 @@
 
 
                 <!-- =================================================
+                     DEVICE CONNECTION
+                     Every registered device, online or not. A device
+                     that stopped reporting stays visible here so it
+                     can never be mistaken for a connected sensor.
+                ================================================== -->
+                <section class="section">
+
+                    <div class="section-header">
+
+                        <h3>
+                            Device Connection
+                        </h3>
+
+                        <span class="badge badge-info">
+                            Live
+                        </span>
+
+                    </div>
+
+                    <div
+                        class="device-grid"
+                        id="dashboard-devices-container"
+                    >
+                        <!-- Device connection cards generated by JavaScript -->
+                    </div>
+
+                </section>
+
+
+                <!-- =================================================
                      DASHBOARD SPLIT
                 ================================================== -->
                 <div class="dashboard-split">
@@ -468,9 +705,13 @@
 
                                 <div class="ai-hero-side">
 
+                                    <span class="ai-source-badge" id="ai-source-badge" data-source="unknown">AI status unknown</span>
+
                                     <span class="risk-pill" id="ai-state-pill" data-level="none">
                                         NO DATA
                                     </span>
+
+                                    <span class="ai-ml-chip is-hidden" id="ai-ml-chip"></span>
 
                                     <div class="ai-hero-meta" id="ai-hero-meta">
                                         Waiting for AI analysis&hellip;
@@ -479,6 +720,25 @@
                                 </div>
 
                             </div>
+
+
+                            <!-- AI RECOMMENDATION (directly below risk level) -->
+                            <div
+                                class="ai-recommendation-inline is-hidden"
+                                id="ai-recommendation-inline"
+                            ></div>
+
+
+                            <!-- AI WARNINGS: frozen sensor + trend -->
+                            <div
+                                class="ai-warning ai-warning-stuck is-hidden"
+                                id="ai-stuck-warning"
+                            ></div>
+
+                            <div
+                                class="ai-warning ai-warning-trend is-hidden"
+                                id="ai-trend-warning"
+                            ></div>
 
 
                             <!-- AI SECONDARY SCORES -->
@@ -551,6 +811,16 @@
                                     </li>
 
                                 </ul>
+
+                            </div>
+
+
+                            <!-- WHY THIS SCORE -->
+                            <div class="ai-why is-hidden" id="ai-why">
+
+                                <h4>Why this score?</h4>
+
+                                <ul id="ai-why-list"></ul>
 
                             </div>
 
@@ -853,6 +1123,180 @@
                     >
                         <!-- Generated by JavaScript -->
                     </div>
+
+                </section>
+
+            </div>
+
+
+            <!-- =================================================
+                 PAGE: SOS HISTORY (control room)
+                 Reads the SAME persisted records as the rest of the
+                 app: /api/incidents (open emergencies) and
+                 /api/alerts (alert history). No second source of truth.
+            ================================================== -->
+            <div
+                id="page-soshistory"
+                class="page"
+            >
+
+                <div class="summary-grid">
+
+                    <div class="summary-card outline-critical">
+                        <div class="card-label">Active SOS</div>
+                        <div class="card-value text-critical" id="sos-hist-sos">0</div>
+                    </div>
+
+                    <div class="summary-card outline-warning">
+                        <div class="card-label">Open Emergencies</div>
+                        <div class="card-value text-warning" id="sos-hist-active">0</div>
+                    </div>
+
+                    <div class="summary-card">
+                        <div class="card-label">Critical Records</div>
+                        <div class="card-value text-critical" id="sos-hist-critical">0</div>
+                    </div>
+
+                    <div class="summary-card">
+                        <div class="card-label">Records Shown</div>
+                        <div class="card-value" id="sos-hist-shown">0</div>
+                    </div>
+
+                </div>
+
+
+                <section class="section">
+
+                    <div class="section-header">
+                        <h3>SOS &amp; Emergency History</h3>
+                        <button
+                            type="button"
+                            class="btn btn-small"
+                            id="sos-history-refresh"
+                        >
+                            Refresh
+                        </button>
+                    </div>
+
+                    <p class="workflow-hint sos-history-source">
+                        Built from the persisted alert records (<code>/api/alerts</code>) and the
+                        incident cases the control-room role can read (<code>/api/incidents</code>).
+                        Open a row to inspect its details and recorded communication timeline.
+                    </p>
+
+                    <div class="rescue-filters sos-history-filters">
+
+                        <label>
+                            Search (alert / incident / device)
+                            <input
+                                type="search"
+                                id="sos-history-search"
+                                placeholder="e.g. AV-1024, ESP32_01, SOS"
+                            >
+                        </label>
+
+                        <label>
+                            From
+                            <input type="date" id="sos-history-from">
+                        </label>
+
+                        <label>
+                            To
+                            <input type="date" id="sos-history-to">
+                        </label>
+
+                        <label>
+                            Severity
+                            <select id="sos-history-severity">
+                                <option value="">All severities</option>
+                                <option value="CRITICAL">Critical</option>
+                                <option value="HIGH">High</option>
+                                <option value="MEDIUM">Medium</option>
+                                <option value="LOW">Low</option>
+                            </select>
+                        </label>
+
+                        <label>
+                            Status
+                            <select id="sos-history-status">
+                                <option value="">All statuses</option>
+                                <optgroup label="Active alert">
+                                    <option value="ACTIVE_ALERT">Active (unacknowledged)</option>
+                                    <option value="ACKNOWLEDGED_ALERT">Acknowledged</option>
+                                </optgroup>
+                                <optgroup label="Incident status">
+                                    <option value="AWAITING_RESPONSE">Awaiting response</option>
+                                    <option value="ASSIGNED">Assigned</option>
+                                    <option value="ACCEPTED">Accepted</option>
+                                    <option value="EN_ROUTE">En route</option>
+                                    <option value="ON_SCENE">On scene</option>
+                                    <option value="RESCUE_IN_PROGRESS">Rescue in progress</option>
+                                    <option value="PERSON_SAFE">Person safe</option>
+                                    <option value="ESCALATED">Escalated</option>
+                                    <option value="RESOLVED">Resolved</option>
+                                    <option value="CANCELLED">Cancelled</option>
+                                </optgroup>
+                            </select>
+                        </label>
+
+                        <label>
+                            Rescue team
+                            <select id="sos-history-team">
+                                <option value="">All teams</option>
+                            </select>
+                        </label>
+
+                        <label class="filter-check">
+                            <input type="checkbox" id="sos-history-sosonly" checked>
+                            SOS records only
+                        </label>
+
+                        <button
+                            type="button"
+                            class="btn btn-small"
+                            id="sos-history-clear"
+                        >
+                            Clear filters
+                        </button>
+
+                    </div>
+
+                    <div
+                        class="rescue-inbox-status hidden"
+                        id="sos-history-status"
+                        role="status"
+                    >
+                        <span id="sos-history-status-text">Loading records…</span>
+                        <button
+                            type="button"
+                            class="btn btn-small"
+                            id="sos-history-retry"
+                        >
+                            Retry
+                        </button>
+                    </div>
+
+                    <div class="rescue-table-wrap">
+                        <table class="rescue-table sos-history-table">
+                            <thead>
+                                <tr>
+                                    <th>Record</th>
+                                    <th>Date &amp; time</th>
+                                    <th>Source / device</th>
+                                    <th>Location</th>
+                                    <th>Severity</th>
+                                    <th>Status</th>
+                                    <th>Rescue team</th>
+                                    <th>AI recommendation</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="sos-history-tbody">
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <p class="rescue-note" id="sos-history-note"></p>
 
                 </section>
 
@@ -1229,6 +1673,458 @@
 
             </div>
 
+
+            <!-- =================================================
+                 PAGE: RESCUE PORTAL
+                 Role-gated: rescue_team, admin
+            ================================================== -->
+            <div
+                id="page-rescue"
+                class="page"
+            >
+
+                <div class="rescue-banner">
+                    <span class="rescue-banner-title">
+                        <i data-lucide="siren"></i>
+                        RESCUE TEAM PORTAL
+                    </span>
+                    <span class="rescue-banner-note">
+                        Academic prototype &mdash; DEMO / SIMULATED dispatch. Not connected to real emergency services.
+                    </span>
+                    <span class="rescue-banner-team hidden" id="rescue-my-team">
+                        --
+                    </span>
+                </div>
+
+                <div class="summary-grid">
+
+                    <div class="summary-card outline-critical">
+                        <div class="card-label">Critical Incidents</div>
+                        <div class="card-value text-critical" id="rc-crit-count">0</div>
+                    </div>
+
+                    <div class="summary-card outline-warning">
+                        <div class="card-label">High Risk</div>
+                        <div class="card-value text-warning" id="rc-high-count">0</div>
+                    </div>
+
+                    <div class="summary-card">
+                        <div class="card-label">Active Emergencies</div>
+                        <div class="card-value" id="rc-active-count">0</div>
+                    </div>
+
+                    <div class="summary-card">
+                        <div class="card-label">My Missions</div>
+                        <div class="card-value" id="rc-mine-count">0</div>
+                    </div>
+
+                </div>
+
+
+                <div class="rescue-layout">
+
+                    <!-- EMERGENCY INBOX -->
+                    <section class="section rescue-inbox">
+                        <div class="section-header">
+                            <h3>Emergency Inbox</h3>
+                            <button class="btn btn-small" onclick="rescueRefresh()">
+                                Refresh
+                            </button>
+                        </div>
+
+                        <!-- View filter: which part of the response workflow to show -->
+                        <div
+                            class="inbox-tabs"
+                            id="rescue-inbox-tabs"
+                            role="tablist"
+                            aria-label="Filter emergencies"
+                        >
+                            <button type="button" class="inbox-tab active" data-inbox-filter="all" role="tab" aria-selected="true">
+                                All <span class="inbox-count" data-inbox-count="all">0</span>
+                            </button>
+                            <button type="button" class="inbox-tab" data-inbox-filter="new" role="tab" aria-selected="false">
+                                Awaiting ack <span class="inbox-count" data-inbox-count="new">0</span>
+                            </button>
+                            <button type="button" class="inbox-tab" data-inbox-filter="acknowledged" role="tab" aria-selected="false">
+                                Acknowledged <span class="inbox-count" data-inbox-count="acknowledged">0</span>
+                            </button>
+                            <button type="button" class="inbox-tab" data-inbox-filter="inprogress" role="tab" aria-selected="false">
+                                In progress <span class="inbox-count" data-inbox-count="inprogress">0</span>
+                            </button>
+                            <button type="button" class="inbox-tab" data-inbox-filter="completed" role="tab" aria-selected="false">
+                                Completed <span class="inbox-count" data-inbox-count="completed">0</span>
+                            </button>
+                        </div>
+
+                        <!-- Loading / error state with retry (shown instead of the list) -->
+                        <div
+                            class="rescue-inbox-status hidden"
+                            id="rescue-inbox-status"
+                            role="status"
+                        >
+                            <span id="rescue-inbox-status-text">Loading emergencies…</span>
+                            <button
+                                type="button"
+                                class="btn btn-small"
+                                id="rescue-inbox-retry"
+                            >
+                                Retry
+                            </button>
+                        </div>
+
+                        <div id="rescue-inbox-list" class="rescue-card-list">
+                            <p class="rescue-empty">No active emergencies.</p>
+                        </div>
+                    </section>
+
+
+                    <!-- INCIDENT DETAIL -->
+                    <section class="section rescue-detail" id="rescue-detail-panel">
+                        <div class="section-header">
+                            <h3>Incident Details</h3>
+                        </div>
+                        <div id="rescue-detail-body" class="rescue-detail-body">
+                            <p class="rescue-empty">
+                                Select an incident from the inbox.
+                            </p>
+                        </div>
+                    </section>
+
+                </div>
+
+
+                <!-- TEAM STATUS + DEVICE HEALTH -->
+                <div class="rescue-layout">
+
+                    <section class="section">
+                        <div class="section-header">
+                            <h3>Rescue Teams</h3>
+                        </div>
+                        <div id="rescue-teams-list" class="rescue-table-wrap">
+                            <p class="rescue-empty">Loading teams...</p>
+                        </div>
+                    </section>
+
+                    <section class="section">
+                        <div class="section-header">
+                            <h3>Device Status</h3>
+                        </div>
+                        <div id="rescue-devices-list" class="rescue-table-wrap">
+                            <p class="rescue-empty">Loading devices...</p>
+                        </div>
+                    </section>
+
+                </div>
+
+            </div>
+
+
+            <!-- =================================================
+                 PAGE: RESCUE HISTORY
+            ================================================== -->
+            <div
+                id="page-history"
+                class="page"
+            >
+
+                <section class="section">
+                    <div class="section-header">
+                        <h3>Rescue History</h3>
+                    </div>
+
+                    <div class="rescue-filters">
+                        <label>Date from
+                            <input type="date" id="hist-from">
+                        </label>
+                        <label>Date to
+                            <input type="date" id="hist-to">
+                        </label>
+                        <label>Severity
+                            <select id="hist-severity">
+                                <option value="">All</option>
+                                <option>CRITICAL</option>
+                                <option>HIGH</option>
+                                <option>MEDIUM</option>
+                                <option>LOW</option>
+                            </select>
+                        </label>
+                        <label>Hazard
+                            <select id="hist-hazard">
+                                <option value="">All</option>
+                                <option>GAS_LEAK</option>
+                                <option>FIRE_HEAT</option>
+                                <option>FLOOD</option>
+                                <option>FALL</option>
+                                <option>SOS</option>
+                                <option>COMBINED</option>
+                                <option>ANOMALY</option>
+                                <option>HIGH_RISK</option>
+                            </select>
+                        </label>
+                        <label>Team
+                            <select id="hist-team">
+                                <option value="">All</option>
+                            </select>
+                        </label>
+                        <label>Status
+                            <select id="hist-status">
+                                <option value="">All</option>
+                                <option>RESOLVED</option>
+                                <option>CANCELLED</option>
+                                <option>ESCALATED</option>
+                                <option>AWAITING_RESPONSE</option>
+                            </select>
+                        </label>
+                        <button class="btn btn-primary btn-small" onclick="rescueLoadHistory()">
+                            Apply
+                        </button>
+                    </div>
+
+                    <div class="rescue-table-wrap">
+                        <table class="rescue-table" id="history-table">
+                            <thead>
+                                <tr>
+                                    <th>Incident</th>
+                                    <th>Date</th>
+                                    <th>Time</th>
+                                    <th>Hazard</th>
+                                    <th>Severity</th>
+                                    <th>Location</th>
+                                    <th>Team</th>
+                                    <th>Response</th>
+                                    <th>Resolution</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="history-tbody">
+                                <tr><td colspan="10" class="rescue-empty">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+
+                <section class="section">
+                    <div class="section-header">
+                        <h3>Rescue Analytics</h3>
+                    </div>
+                    <div id="rescue-analytics-body" class="rescue-analytics-grid">
+                        <p class="rescue-empty">Loading...</p>
+                    </div>
+                </section>
+
+            </div>
+
+
+            <!-- ==========================================================
+                 PAGE: RESCUE EQUIPMENT  (RESCUE_TEAM only)
+                 Inventory, readiness, maintenance and usage history.
+                 ========================================================== -->
+            <div
+                id="page-equipment"
+                class="page"
+            >
+
+                <div class="rescue-banner">
+                    <span class="rescue-banner-title">
+                        <i data-lucide="package"></i>
+                        RESCUE EQUIPMENT
+                    </span>
+                    <span class="rescue-banner-note">
+                        Readiness for the rescue team only. Items under maintenance, damaged or
+                        unavailable are never counted as ready.
+                    </span>
+                </div>
+
+                <p
+                    class="rescue-storage-note hidden"
+                    id="equipment-storage-note"
+                ></p>
+
+                <div class="rescue-summary-grid" id="equipment-summary">
+                    <p class="rescue-empty">Loading equipment...</p>
+                </div>
+
+                <section class="section">
+                    <div class="section-header">
+                        <h3>Equipment Inventory</h3>
+                        <div class="rescue-filters">
+                            <input
+                                type="search"
+                                id="equipment-search"
+                                class="rescue-input"
+                                placeholder="Search name or ID"
+                            >
+                            <select
+                                id="equipment-status-filter"
+                                class="rescue-select"
+                            >
+                                <option value="">All statuses</option>
+                                <option value="AVAILABLE">Available</option>
+                                <option value="IN_USE">In use</option>
+                                <option value="MAINTENANCE">Maintenance</option>
+                                <option value="DAMAGED">Damaged</option>
+                                <option value="UNAVAILABLE">Unavailable</option>
+                            </select>
+                            <button
+                                type="button"
+                                class="btn btn-outline"
+                                id="equipment-refresh"
+                            >
+                                Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <div id="equipment-list" class="rescue-card-list">
+                        <p class="rescue-empty">Loading...</p>
+                    </div>
+                </section>
+
+                <section class="section">
+                    <div class="section-header">
+                        <h3>⚠️ Equipment Maintenance</h3>
+                    </div>
+                    <div id="equipment-maintenance" class="rescue-card-list">
+                        <p class="rescue-empty">Loading...</p>
+                    </div>
+                </section>
+
+                <section class="section">
+                    <div class="section-header">
+                        <h3>Equipment Usage History</h3>
+                    </div>
+                    <div id="equipment-usage-history" class="rescue-card-list">
+                        <p class="rescue-empty">Loading...</p>
+                    </div>
+                </section>
+
+            </div>
+
+
+            <!-- ==========================================================
+                 PRE-DEPARTURE EQUIPMENT CHECK
+                 Shown inside the rescue portal when a mission is ACCEPTED.
+                 ========================================================== -->
+            <div
+                id="page-equipmentcheck"
+                class="page"
+            >
+                <div class="rescue-banner">
+                    <span class="rescue-banner-title">
+                        <i data-lucide="clipboard-check"></i>
+                        PRE-DEPARTURE EQUIPMENT CHECK
+                    </span>
+                    <span class="rescue-banner-note">
+                        Confirm every required item before the team departs. EN ROUTE stays blocked
+                        until the checklist is genuinely complete.
+                    </span>
+                </div>
+
+                <div class="rescue-card" id="checklist-head">
+                    <p class="rescue-empty">Select a mission from the Rescue Portal.</p>
+                </div>
+
+                <section class="section">
+                    <div class="section-header">
+                        <h3>Checklist</h3>
+                    </div>
+                    <div id="checklist-items" class="rescue-card-list"></div>
+                    <div class="rescue-actions">
+                        <button
+                            type="button"
+                            class="btn btn-rescue"
+                            id="checklist-complete"
+                        >
+                            ✅ EQUIPMENT CHECK COMPLETE
+                        </button>
+                        <span
+                            class="rescue-note"
+                            id="checklist-status"
+                        ></span>
+                    </div>
+                </section>
+
+                <section class="section">
+                    <div class="section-header">
+                        <h3>Equipment to take on this mission</h3>
+                    </div>
+                    <div id="checklist-equipment" class="rescue-card-list"></div>
+                    <div class="rescue-actions">
+                        <button
+                            type="button"
+                            class="btn btn-primary"
+                            id="checkout-equipment"
+                        >
+                            Check out selected equipment
+                        </button>
+                    </div>
+                </section>
+
+                <section class="section">
+                    <div class="section-header">
+                        <h3>Recommended for this hazard</h3>
+                    </div>
+                    <p class="rescue-disclaimer" id="checklist-disclaimer"></p>
+                    <div id="checklist-recommendations" class="rescue-card-list"></div>
+                </section>
+
+            </div>
+
+
+            <!-- =================================================
+                 PAGE: ADMIN RESCUE CONTROL
+                 Role-gated: admin
+            ================================================== -->
+            <div
+                id="page-rescuecontrol"
+                class="page"
+            >
+
+                <div class="rescue-banner">
+                    <span class="rescue-banner-title">
+                        <i data-lucide="radio-tower"></i>
+                        RESCUE CONTROL
+                    </span>
+                    <span class="rescue-banner-note">
+                        Assign, reassign, escalate and cancel incidents. All actions are logged to the incident timeline.
+                    </span>
+                </div>
+
+                <section class="section">
+                    <div class="section-header">
+                        <h3>Active Incidents</h3>
+                        <button class="btn btn-small" onclick="rescueAdminRefresh()">
+                            Refresh
+                        </button>
+                    </div>
+                    <div id="admin-incidents-list" class="rescue-table-wrap">
+                        <p class="rescue-empty">Loading...</p>
+                    </div>
+                </section>
+
+                <section class="section">
+                    <div class="section-header">
+                        <h3>Team Management</h3>
+                    </div>
+                    <div id="admin-teams-list" class="rescue-table-wrap">
+                        <p class="rescue-empty">Loading...</p>
+                    </div>
+                </section>
+
+                <section class="section">
+                    <div class="section-header">
+                        <h3>Device Location Configuration</h3>
+                    </div>
+                    <div id="admin-locations-list" class="rescue-table-wrap">
+                        <p class="rescue-empty">Loading...</p>
+                    </div>
+                    <p class="rescue-note">
+                        Locations are configured installation positions &mdash; not live GPS tracking.
+                    </p>
+                </section>
+
+            </div>
+
         </main>
 
     </div>
@@ -1258,16 +2154,24 @@
                 <span id="emergency-count">0 workers affected</span>
             </div>
 
-        </div>
+        </div>            <!-- Switcher shown only while more than one SOS alert is active -->
+            <div
+                id="emergency-switcher"
+                class="emergency-switcher hidden"
+                role="tablist"
+                aria-label="Active SOS alerts"
+            >
+                <!-- Alert chips rendered by script.js -->
+            </div>
 
-        <div class="emergency-body" id="emergency-workers">
-            <!-- Emergency worker cards rendered by script.js from live sensor data -->
-        </div>
+            <div class="emergency-body" id="emergency-workers">
+                <!-- Emergency worker cards rendered by script.js from live sensor data -->
+            </div>
 
         <div class="emergency-footer">
 
             <span class="emergency-note">
-                Return to the normal dashboard unlocks automatically when the SOS condition is no longer active.
+                Minimizing or returning to the dashboard keeps every SOS alert active &mdash; nothing is dismissed, and live updates keep arriving.
             </span>
 
             <div class="emergency-footer-actions">
@@ -1284,8 +2188,8 @@
                     type="button"
                     class="btn-emergency-return"
                     id="emergency-return"
-                    disabled
-                    title="SOS still active"
+                    onclick="emergencyReturnToDashboard()"
+                    title="Return to the normal dashboard — the SOS alert stays active"
                 >
                     Return to Dashboard
                 </button>
@@ -1305,6 +2209,201 @@
         <i data-lucide="siren"></i>
         <span id="emergency-mini-bar-text">SOS ACTIVE</span>
         <span class="mini-restore">Reopen</span>
+    </div>
+
+
+    <!-- =========================================================
+         SOS ALERT DETAIL MODAL (control room)
+         Full detail for ONE SOS / emergency record: overview,
+         the AI recommendation generated for THIS alert, the
+         rescue-team ping action and the recorded communication
+         timeline. Every field is read from the existing APIs
+         (/api/incidents, /api/incidents/:id/timeline, /api/risk,
+         /api/rescue-teams) — nothing is fabricated.
+    ========================================================== -->
+    <div
+        id="sos-detail-modal"
+        class="modal-overlay hidden"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="sos-detail-title"
+    >
+
+        <div class="modal-content sos-modal-content">
+
+            <div class="modal-header">
+
+                <div class="sos-modal-head-left">
+                    <h3 id="sos-detail-title">SOS Alert Details</h3>
+                    <span class="sos-modal-sub" id="sos-detail-sub">—</span>
+                </div>
+
+                <div class="sos-modal-head-right">
+                    <span class="badge badge-critical hidden" id="sos-detail-sev">—</span>
+                    <span class="badge badge-info hidden" id="sos-detail-status">—</span>
+                    <button
+                        type="button"
+                        class="btn-close"
+                        id="sos-detail-close"
+                        aria-label="Close SOS details"
+                    >
+                        <i data-lucide="x"></i>
+                    </button>
+                </div>
+
+            </div>
+
+            <div class="sos-modal-toolbar">
+
+                <button
+                    type="button"
+                    class="btn btn-small"
+                    id="sos-detail-refresh"
+                >
+                    <i data-lucide="refresh-cw"></i>
+                    Refresh
+                </button>
+
+                <button
+                    type="button"
+                    class="btn btn-small btn-primary"
+                    id="sos-detail-minimize"
+                >
+                    Minimize — back to dashboard
+                </button>
+
+            </div>
+
+            <div class="modal-body">
+
+                <!-- Loading / error state (with retry) -->
+                <div
+                    class="sos-state hidden"
+                    id="sos-detail-state"
+                    role="status"
+                >
+                    <span id="sos-detail-state-text">Loading alert…</span>
+                    <button
+                        type="button"
+                        class="btn btn-small"
+                        id="sos-detail-retry"
+                    >
+                        Retry
+                    </button>
+                </div>
+
+                <div id="sos-detail-content">
+
+                    <!-- ── OVERVIEW ─────────────────────────── -->
+                    <div class="detail-grid sos-overview">
+                        <div class="detail-item">
+                            <span class="k">Alert / incident ID</span>
+                            <span class="v inc-id" id="sos-f-id">—</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="k">Hazard</span>
+                            <span class="v" id="sos-f-hazard">—</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="k">Source / device</span>
+                            <span class="v" id="sos-f-device">—</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="k">Location</span>
+                            <span class="v" id="sos-f-location">—</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="k">Detected</span>
+                            <span class="v" id="sos-f-detected">—</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="k">Risk score</span>
+                            <span class="v" id="sos-f-risk">—</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="k">Person detected</span>
+                            <span class="v" id="sos-f-person">—</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="k">Assigned team</span>
+                            <span class="v" id="sos-f-team">—</span>
+                        </div>
+                    </div>
+
+                    <!-- ── RESPONSE STATUS (real incident status) ── -->
+                    <div class="sos-block">
+                        <p class="detail-sub">Response status</p>
+                        <div class="sos-status-track" id="sos-status-track"></div>
+                    </div>
+
+                    <!-- ── PING RESCUE TEAM ─────────────────── -->
+                    <div class="sos-block">
+                        <p class="detail-sub">Rescue notification</p>
+                        <div class="sos-team-panel" id="sos-team-panel">
+                            <span class="workflow-hint">Loading rescue teams…</span>
+                        </div>
+                        <div class="sos-ping-row">
+                            <button
+                                type="button"
+                                class="btn btn-primary btn-ping"
+                                id="sos-ping-btn"
+                            >
+                                <i data-lucide="radio"></i>
+                                Ping Rescue Team
+                            </button>
+                            <span
+                                class="sos-ping-msg"
+                                id="sos-ping-msg"
+                                role="status"
+                                aria-live="polite"
+                            ></span>
+                        </div>
+                        <p class="workflow-hint" id="sos-ping-note">
+                            Pinging records a rescue request for THIS alert on the incident
+                            timeline and surfaces it in the Rescue Portal. Team assignment is
+                            confirmed by the rescue team in Rescue Control.
+                        </p>
+                    </div>
+
+                    <!-- ── AI RECOMMENDATION (this alert only) ── -->
+                    <div class="sos-block">
+                        <div class="sos-block-head">
+                            <p class="detail-sub">AI recommendation for this alert</p>
+                            <span class="source-pill">AI — assistive only</span>
+                        </div>
+                        <div class="sos-ai" id="sos-ai-body">
+                            <span class="workflow-hint">Loading AI analysis…</span>
+                        </div>
+                    </div>
+
+                    <!-- ── SUPPORTING SENSOR READINGS ───────── -->
+                    <div class="sos-block">
+                        <p class="detail-sub">Supporting sensor readings</p>
+                        <div class="sensor-rows" id="sos-sensor-body"></div>
+                        <p class="workflow-hint" id="sos-sensor-note"></p>
+                    </div>
+
+                    <!-- ── COMMUNICATION TIMELINE ────────────── -->
+                    <div class="sos-block">
+                        <div class="sos-block-head">
+                            <p class="detail-sub">Communication &amp; event timeline</p>
+                            <span class="workflow-hint" id="sos-timeline-updated"></span>
+                        </div>
+                        <div class="timeline" id="sos-timeline"></div>
+                        <p class="workflow-hint" id="sos-comm-note">
+                            Entries come from the recorded incident events (who did what, and when).
+                            Rescue-team updates carry their own message text; the control room
+                            notifies teams through the rescue request above — free-form
+                            control-room messages are not supported by the current backend.
+                        </p>
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
     </div>
 
 
@@ -1378,6 +2477,10 @@
 
     <!-- Project JavaScript -->
     <script src="script.js"></script>
+    <script src="dashboard-rescue.js"></script>
+    <script src="rescue-equipment.js"></script>
+    <script src="rescue.js"></script>
+    <script src="sos-coordination.js"></script>
 
 </body>
 </html>

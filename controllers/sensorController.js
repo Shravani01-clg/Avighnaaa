@@ -1,6 +1,8 @@
+
 const store = require("../config/dataStore");
 const { calculateRisk } = require("./riskEngine");
 const { getAIAnalysis } = require("./aiIntegration");
+const { createIncidentFromAlert } = require("./incidentController");
 
 // ─── Alert Type → Severity Map ──────────────────────────────
 
@@ -14,9 +16,11 @@ const ALERT_SEVERITY = {
   COMBINED_DANGER: "CRITICAL",
   ANOMALY: "MEDIUM",
   HIGH_RISK: "HIGH",
+  SENSOR_STUCK: "MEDIUM",
 };
 
 const ALERT_MESSAGES = {
+  SENSOR_STUCK: "Sensor frozen — device check required",
   GAS_DANGER: "Dangerous gas levels detected",
   FLOOD_DANGER: "Flooding / high water level detected",
   TEMP_DANGER: "Abnormal temperature detected",
@@ -54,7 +58,7 @@ async function createAlertIfNew(
       limit: 1,
     });
 
-    if (existing.length > 0) return;
+    if (existing.length > 0) return existing[0].id;
 
     const severity =
       ALERT_SEVERITY[alertType] || "MEDIUM";
@@ -67,13 +71,15 @@ async function createAlertIfNew(
       ? `${baseMessage}: ${extraMessage}`
       : baseMessage;
 
-    await store.insert("alerts", {
+    const created = await store.insert("alerts", {
       device_id,
       alert_type: alertType,
       severity,
       message,
       is_resolved: false,
     });
+
+    return Array.isArray(created) && created[0] ? created[0].id : null;
   } catch (err) {
     console.error(
       `Alert creation failed for ${alertType}:`,
@@ -106,16 +112,11 @@ const receiveSensorData = async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message:
-          "Valid device_id is required",
+        message: "Valid device_id is required",
       });
     }
 
     // ── MPU6050 validation ──────────────────────────────────
-    //
-    // MPU6050 is currently the only physical sensor.
-    // Therefore X, Y and Z acceleration are required.
-    //
 
     const mpuFields = {
       acceleration_x_ms2,
@@ -135,17 +136,12 @@ const receiveSensorData = async (req, res) => {
       ) {
         return res.status(400).json({
           success: false,
-          message:
-            `${field} must be a valid number`,
+          message: `${field} must be a valid number`,
         });
       }
     }
 
     // ── Optional sensor validation ──────────────────────────
-    //
-    // These sensors are NOT currently connected.
-    // If values are supplied later, validate them.
-    //
 
     if (
       temperature_c !== undefined &&
@@ -181,8 +177,7 @@ const receiveSensorData = async (req, res) => {
       if (gas_raw < 0) {
         return res.status(400).json({
           success: false,
-          message:
-            "gas_raw cannot be negative",
+          message: "gas_raw cannot be negative",
         });
       }
     }
@@ -205,8 +200,7 @@ const receiveSensorData = async (req, res) => {
       if (water_level_cm < 0) {
         return res.status(400).json({
           success: false,
-          message:
-            "water_level_cm cannot be negative",
+          message: "water_level_cm cannot be negative",
         });
       }
     }
@@ -219,9 +213,7 @@ const receiveSensorData = async (req, res) => {
     ) {
       if (
         typeof battery_level_percent !== "number" ||
-        !Number.isFinite(
-          battery_level_percent
-        )
+        !Number.isFinite(battery_level_percent)
       ) {
         return res.status(400).json({
           success: false,
@@ -250,21 +242,17 @@ const receiveSensorData = async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message:
-          "sos must be true or false",
+        message: "sos must be true or false",
       });
     }
 
     // ── Timestamp validation ────────────────────────────────
 
     if (timestamp !== undefined) {
-      const parsedTimestamp =
-        new Date(timestamp);
+      const parsedTimestamp = new Date(timestamp);
 
       if (
-        Number.isNaN(
-          parsedTimestamp.getTime()
-        )
+        Number.isNaN(parsedTimestamp.getTime())
       ) {
         return res.status(400).json({
           success: false,
@@ -274,18 +262,16 @@ const receiveSensorData = async (req, res) => {
       }
     }
 
-    // ── Calculate risk ──────────────────────────────────────
+    // ── Calculate rule-based risk ───────────────────────────
 
-    const ruleBasedRisk =
-      calculateRisk(req.body);
+    const ruleBasedRisk = calculateRisk(req.body);
 
     // ── Get AI analysis ─────────────────────────────────────
 
-    const aiResult =
-      await getAIAnalysis(
-        req.body,
-        ruleBasedRisk
-      );
+    const aiResult = await getAIAnalysis(
+      req.body,
+      ruleBasedRisk
+    );
 
     // Final risk: AI never downgrades, only upgrades
     const risk = {
@@ -301,8 +287,7 @@ const receiveSensorData = async (req, res) => {
         ruleBasedRisk.anomaly_detected ||
         (
           aiResult.aiAnalysis
-            ? aiResult.aiAnalysis
-                .anomalyDetected === true
+            ? aiResult.aiAnalysis.anomalyDetected === true
             : false
         ),
 
@@ -326,90 +311,175 @@ const receiveSensorData = async (req, res) => {
     };
 
     // ── Store sensor reading ────────────────────────────────
+    // Only real readings supplied by the device are processed.
+
+    const data = await store.insert(
+      "sensor_readings",
+      {
+        device_id,
+
+        temperature_c:
+          temperature_c ?? null,
+
+        gas_raw:
+          gas_raw ?? null,
+
+        water_level_cm:
+          water_level_cm ?? null,
+
+        acceleration_x_ms2,
+
+        acceleration_y_ms2,
+
+        acceleration_z_ms2,
+
+        battery_level_percent:
+          battery_level_percent ?? null,
+
+        sos:
+          sos ?? false,
+
+        recorded_at:
+          timestamp || new Date().toISOString(),
+      }
+    );
+
+    const record = Array.isArray(data)
+      ? data[0]
+      : data;
+
+    // ── Store risk prediction ───────────────────────────────
+    // NEW: Persist the AI analysis alongside the risk result.
     //
-    // Only MPU6050 values are currently real.
-    // Other sensor values are stored as NULL.
-    //
+    // The `ai` column is optional. If the deployed risk_predictions
+    // table has not been migrated with it yet, fall back to inserting
+    // without it so a sensor reading is never rejected because of a
+    // missing optional column. See migrations/007_risk_predictions_ai_column.sql.
 
-    const data =
-      await store.insert(
-        "sensor_readings",
-        {
-          device_id,
+    const riskRow = {
+      device_id,
 
-          temperature_c:
-            temperature_c ?? null,
+      risk_score:
+        risk.risk_score,
 
-          gas_raw:
-            gas_raw ?? null,
+      risk_level:
+        risk.risk_level,
 
-          water_level_cm:
-            water_level_cm ?? null,
+      reason:
+        risk.reason,
 
-          acceleration_x_ms2,
+      anomaly_detected:
+        risk.anomaly_detected,
 
-          acceleration_y_ms2,
+      fall_state:
+        risk.fall_state,
+    };
 
-          acceleration_z_ms2,
-
-          battery_level_percent:
-            battery_level_percent ?? null,
-
-          sos:
-            sos ?? false,
-
-          recorded_at:
-            timestamp ||
-            new Date().toISOString(),
-        }
-      );
-
-    const record =
-      Array.isArray(data)
-        ? data[0]
-        : data;
-
-    // ── Store risk prediction ──────────────────────────────
-
-    const riskData =
-      await store.insert(
+    let riskData;
+    try {
+      riskData = await store.insert(
         "risk_predictions",
-        {
-          device_id,
-
-          risk_score:
-            risk.risk_score,
-
-          risk_level:
-            risk.risk_level,
-
-          reason:
-            risk.reason,
-
-          anomaly_detected:
-            risk.anomaly_detected,
-
-          fall_state:
-            risk.fall_state,
-        }
+        { ...riskRow, ai: risk.ai || null }
       );
+    } catch (err) {
+      // Postgres/PostgREST reports an undefined column as
+      // "column risk_predictions.ai does not exist" (SQLSTATE 42703).
+      const isMissingAiColumn =
+        err &&
+        err.code === "42703" &&
+        typeof err.message === "string" &&
+        /\bdoes not exist\b/i.test(err.message) &&
+        /\bai\b/.test(err.message);
 
-    const riskRecord =
-      Array.isArray(riskData)
-        ? riskData[0]
-        : riskData;
+      if (!isMissingAiColumn) {
+        console.error(
+          "Risk prediction insert failed:",
+          err.message
+        );
+        throw err;
+      }
+
+      console.warn(
+        "risk_predictions.ai column missing — storing without AI payload"
+      );
+      riskData = await store.insert("risk_predictions", riskRow);
+    }
+
+    const riskRecord = Array.isArray(riskData)
+      ? riskData[0]
+      : riskData;
 
     // ── Create alerts ───────────────────────────────────────
 
-    for (
-      const alertType
-      of risk.alerts
-    ) {
-      await createAlertIfNew(
+    const createdAlertIds = {};
+
+    for (const alertType of risk.alerts) {
+      const typeId =
+        typeof alertType === "string"
+          ? alertType
+          : alertType && alertType.type;
+
+      if (!typeId) continue;
+
+      const alertId = await createAlertIfNew(
         device_id,
-        alertType,
+        typeId,
         risk.reason
       );
+
+      createdAlertIds[typeId] = alertId;
+    }
+
+    // ── Rescue layer: incident creation from serious alerts ──
+    // Runs AFTER the existing alert flow and can never break it.
+    // ONE incident per reading: the highest-priority hazard wins
+    // (COMBINED > SOS > GAS > TEMP > FLOOD > FALL > others), so a
+    // single critical reading does not open 5 parallel cases.
+    // Deduplication lives inside createIncidentFromAlert.
+
+    const HAZARD_PRIORITY = {
+      COMBINED_DANGER: 100,
+      SOS: 90,
+      GAS_DANGER: 80,
+      TEMP_DANGER: 70,
+      FALL_DETECTED: 65,
+      FLOOD_DANGER: 60,
+      POSSIBLE_FALL: 50,
+      HIGH_RISK: 20,
+      ANOMALY: 10,
+    };
+
+    let bestEntry = null;
+    let bestPriority = -1;
+
+    for (const alertEntry of risk.alerts) {
+      const typeId =
+        typeof alertEntry === "string"
+          ? alertEntry
+          : alertEntry && alertEntry.type;
+
+      if (!typeId) continue;
+
+      const severity =
+        (typeof alertEntry === "object" && alertEntry.severity) ||
+        ALERT_SEVERITY[typeId] ||
+        "MEDIUM";
+
+      const priority = HAZARD_PRIORITY[typeId] || 0;
+      if (priority > bestPriority) {
+        bestPriority = priority;
+        bestEntry = { typeId, severity };
+      }
+    }
+
+    if (bestEntry) {
+      await createIncidentFromAlert({
+        device_id,
+        alertType: bestEntry.typeId,
+        severity: bestEntry.severity,
+        alertId: createdAlertIds[bestEntry.typeId] || null,
+        risk: { ...risk, sos: req.body.sos === true },
+      });
     }
 
     // ── API response ────────────────────────────────────────
@@ -443,7 +513,6 @@ const receiveSensorData = async (req, res) => {
     });
 
   } catch (err) {
-
     console.error(
       "❌ Sensor data processing error:",
       err
@@ -451,65 +520,48 @@ const receiveSensorData = async (req, res) => {
 
     res.status(500).json({
       success: false,
-      message:
-        "Server error",
-      error:
-        err.message,
+      message: "Server error",
+      error: err.message,
     });
   }
 };
 
 // GET /api/sensor-data/:deviceId
-const getSensorData =
-  async (req, res) => {
+const getSensorData = async (req, res) => {
+  try {
+    const { deviceId } = req.params;
 
-    try {
+    const data = await store.select(
+      "sensor_readings",
+      {
+        filters: {
+          device_id: deviceId,
+        },
 
-      const {
-        deviceId
-      } = req.params;
+        orderBy: "recorded_at",
 
-      const data =
-        await store.select(
-          "sensor_readings",
-          {
-            filters: {
-              device_id:
-                deviceId,
-            },
+        limit: 50,
+      }
+    );
 
-            orderBy:
-              "recorded_at",
+    res.json({
+      success: true,
 
-            limit: 50,
-          }
-        );
+      device_id: deviceId,
 
-      res.json({
-        success: true,
+      count: data.length,
 
-        device_id:
-          deviceId,
+      data,
+    });
 
-        count:
-          data.length,
-
-        data,
-      });
-
-    } catch (err) {
-
-      res.status(500).json({
-        success: false,
-
-        message:
-          "Server error",
-
-        error:
-          err.message,
-      });
-    }
-  };
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: err.message,
+    });
+  }
+};
 
 module.exports = {
   receiveSensorData,
