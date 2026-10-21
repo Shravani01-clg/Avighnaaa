@@ -12,7 +12,10 @@
 lucide.createIcons();
 
 // Must match PORT in .env (5002). Change both together if you move the port.
-const API_BASE_URL = "http://localhost:5002/api";
+const API_BASE_URL =
+    window.location.hostname === "localhost"
+        ? "http://localhost:5002/api"
+        : "https://avighnaa-backend.onrender.com/api";
 const SUPABASE_URL = "https://iuiytpsnvrsshmygfrny.supabase.co";
 const SUPABASE_KEY = "sb_publishable_CkG8WbV7G8Qgbq9XIr_ocA_jTW5nFc-";
 
