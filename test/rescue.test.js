@@ -1,14 +1,22 @@
 /**
  * Rescue Layer Tests (TEST 5–8 + role checks)
  *
- * Run: node test/rescue.test.js
+ * Run: node test/rescue.test.js --live
  *
  * Exercises the incident workflow through the real controllers with
- * mocked req/res (no Supabase credentials needed — in-memory store).
+ * mocked req/res. It writes incidents to the live database, so it refuses
+ * to run without the explicit --live opt-in.
  */
 
 const assert = require("assert");
+const { requireLiveDbWrite } = require("./live-guard");
+
+// This suite writes to the live database — never run it by accident.
+requireLiveDbWrite("rescue.test.js");
+
 const store = require("../config/dataStore");
+const { ACTION_EVENTS } = require("../config/rescueConfig");
+const { cleanupTestIncidents } = require("./cleanup");
 const {
   createIncidentFromAlert,
   assignIncident,
@@ -74,6 +82,11 @@ function ok(label) { passed += 1; console.log(`  ✅ ${label}`); }
   const RUN = Date.now().toString(36).toUpperCase();
   const DEV_A = `TEST-DEV-1-${RUN}`;
   const DEV_B = `TEST-DEV-2-${RUN}`;
+  // The escalation incident is left in the ESCALATED state on purpose, so it
+  // needs its own per-run device id too — a fixed id made the next run
+  // update the previous run's incident instead of creating a new one, and
+  // the "overdue incident escalates" assertion then failed.
+  const DEV_C = `TEST-DEV-3-${RUN}`;
 
   const first = await createIncidentFromAlert({
     device_id: DEV_A,
@@ -244,17 +257,38 @@ function ok(label) { passed += 1; console.log(`  ✅ ${label}`); }
 
   console.log("── Escalation (TEST 8) ──");
   const esc = await createIncidentFromAlert({
-    device_id: "TEST-DEV-3",
+    device_id: DEV_C,
     alertType: "SOS",
     severity: "CRITICAL",
     alertId: null,
     risk,
   });
-  // Backdate so it looks overdue
+  // Backdate so it looks overdue.
+  //
+  // The escalation clock follows the DETECTION event in the incident
+  // timeline, not `incidents.updated_at` — that column is bumped by every
+  // new sensor reading for an open incident, so a device that keeps
+  // transmitting could never be escalated. The timeline anchor is what has
+  // to be moved back to make the incident genuinely overdue.
+  const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   await store.update(
     "incidents",
     { id: esc.id },
-    { updated_at: new Date(Date.now() - 10 * 60 * 1000).toISOString() }
+    {
+      detected_at: tenMinutesAgo,
+      created_at: tenMinutesAgo,
+      updated_at: tenMinutesAgo,
+    }
+  );
+  await store.update(
+    "incident_events",
+    { incident_id: esc.incident_id, event_type: ACTION_EVENTS.DETECT },
+    { timestamp: tenMinutesAgo }
+  );
+  await store.update(
+    "incident_events",
+    { incident_id: esc.incident_id, event_type: ACTION_EVENTS.CREATE },
+    { timestamp: tenMinutesAgo }
   );
   await escalationTick();
   const escAfter = await store.select("incidents", { filters: { incident_id: esc.incident_id }, limit: 1 });
@@ -277,6 +311,10 @@ function ok(label) { passed += 1; console.log(`  ✅ ${label}`); }
   assert(res.body.data.resolved_incidents >= 1);
   assert(res.body.data.escalated_incidents >= 1);
   ok("stats computed from real incidents only");
+
+  // Remove the incidents this run created so the live database is left as
+  // it was found. Only the incident ids created above are touched.
+  await cleanupTestIncidents([first.incident_id, esc.incident_id]);
 
   console.log(`\n🎉 ${passed} assertions passed`);
   process.exit(0);

@@ -118,6 +118,7 @@ const {
   INCIDENT_MIN_SEVERITY,
   INCIDENT_COOLDOWN_MINUTES,
   RESPONSE_TIMEOUT_MINUTES,
+  ESCALATION_CHECK_MS,
   severityAtLeast,
   HAZARD_MAP,
   HAZARD_TO_TEAM,
@@ -733,48 +734,213 @@ const getStats = async (req, res) => {
 
 // ─── ESCALATION SCHEDULER ──────────────────────────────────────
 
+// Only incidents that have NOT been acknowledged by a rescue team are
+// eligible for automatic escalation:
+//   AWAITING_RESPONSE — nobody owns it yet
+//   ASSIGNED          — a team was assigned but never accepted
+// Once a team ACCEPTs, the scheduler must never touch the incident again.
+// Previously ACCEPTED was also in this list, which regressed live missions
+// (ACCEPTED → ESCALATED) and dropped them out of the "acknowledged" inbox
+// tab every time a team paused longer than RESPONSE_TIMEOUT_MINUTES.
+const ESCALATION_ELIGIBLE_STATUSES = ["AWAITING_RESPONSE", "ASSIGNED"];
+
+// Which timeline event starts (or restarts) the escalation clock for a
+// status. The clock MUST follow state changes, not data updates:
+// `incidents.updated_at` is bumped every time a new sensor reading arrives
+// for an open incident (the dedup path in createIncidentFromAlert), so
+// ageing from updated_at meant an unacknowledged incident whose device kept
+// transmitting could never be escalated at all. The incident_events timeline
+// is the source of truth for when the current status was reached:
+//   AWAITING_RESPONSE -> when the incident was first detected ("first")
+//   ASSIGNED          -> when the team was last assigned / reassigned ("last")
+const ESCALATION_CLOCK_EVENTS = {
+  AWAITING_RESPONSE: { types: [ACTION_EVENTS.DETECT, ACTION_EVENTS.CREATE], pick: "first" },
+  ASSIGNED: { types: [ACTION_EVENTS.ASSIGN, ACTION_EVENTS.REASSIGN], pick: "last" },
+};
+
+// Scheduler loop failure handling: exponential backoff between attempts,
+// capped so escalation checks never stop being attempted for long.
+const ESCALATION_MAX_BACKOFF_MS = 10 * 60 * 1000;
+let escalationConsecutiveFailures = 0;
+let escalationTimer = null;
+
+/**
+ * Loads the escalation clock for the given incidents from the timeline.
+ *
+ * Returns a Map keyed by incident_id, whose value maps event_type to the
+ * timestamp of the most recent event of that type.
+ *
+ * A failure to read the timeline is NOT fatal: the caller falls back to the
+ * incident's own timestamps so escalation still works.
+ */
+async function loadEscalationClock(incidents) {
+  const wanted = new Set();
+  for (const inc of incidents || []) {
+    const rule = ESCALATION_CLOCK_EVENTS[inc.status];
+    if (rule) rule.types.forEach((t) => wanted.add(t));
+  }
+  const clock = new Map();
+  if (wanted.size === 0) return clock;
+
+  try {
+    const events = await store.select("incident_events", {
+      filters: { event_type: [...wanted] },
+      orderBy: "timestamp",
+      limit: 5000,
+    });
+
+    for (const ev of events || []) {
+      const key = String(ev.incident_id);
+      const at = new Date(ev.timestamp).getTime();
+      if (!Number.isFinite(at)) continue;
+      if (!clock.has(key)) clock.set(key, {});
+      const perIncident = clock.get(key);
+      const prev = perIncident[ev.event_type];
+      if (prev === undefined || at > prev) perIncident[ev.event_type] = at;
+    }
+  } catch (err) {
+    console.warn(
+      `⚠️  Could not read the escalation timeline (${err.message}) — ` +
+        "falling back to the incident timestamps"
+    );
+  }
+
+  return clock;
+}
+
+/**
+ * When did the incident reach its current status? Used to age the
+ * escalation timer.
+ */
+function escalationBaseTime(inc, clock) {
+  const rule = ESCALATION_CLOCK_EVENTS[inc.status];
+  const perIncident = clock.get(String(inc.incident_id));
+
+  let base = null;
+  if (rule && perIncident) {
+    const times = rule.types
+      .map((type) => perIncident[type])
+      .filter((at) => at !== undefined);
+
+    if (times.length > 0) {
+      base = rule.pick === "first" ? Math.min(...times) : Math.max(...times);
+    }
+  }
+
+  if (base === null) {
+    // No matching timeline event (e.g. an incident created before the
+    // timeline existed) — fall back to the incident's own timestamps.
+    const fallback = new Date(inc.updated_at || inc.created_at).getTime();
+    base = Number.isFinite(fallback) ? fallback : null;
+  }
+
+  return base;
+}
+
 /**
  * Escalates incidents that were never acknowledged within
  * RESPONSE_TIMEOUT_MINUTES. SIMULATED escalation: records an event
  * and flags the incident — it does NOT contact any external service.
+ *
+ * Safety rules:
+ *  - only unacknowledged incidents (ESCALATION_ELIGIBLE_STATUSES) are read;
+ *  - the clock follows the timeline (see ESCALATION_CLOCK_EVENTS), so a
+ *    live sensor feed can no longer postpone escalation forever;
+ *  - the row is re-read right before writing and the update is a
+ *    compare-and-set on the current status, so an incident that gets
+ *    accepted (or otherwise acted on) mid-tick is left completely alone
+ *    and no duplicate timeline event is recorded;
+ *  - errors are rethrown so the scheduler loop can back off and log them.
  */
 async function escalationTick() {
-  try {
-    const all = await store.select("incidents", {
-      filters: { status: ["AWAITING_RESPONSE", "ASSIGNED", "ACCEPTED"] },
-      orderBy: "created_at",
-      limit: 200,
+  const all = await store.select("incidents", {
+    filters: { status: ESCALATION_ELIGIBLE_STATUSES },
+    orderBy: "created_at",
+    limit: 200,
+  });
+
+  if (!all || all.length === 0) return;
+
+  const clock = await loadEscalationClock(all);
+
+  const now = Date.now();
+  for (const inc of all) {
+    // Timer starts from the last STATE CHANGE (detection / assignment).
+    const base = escalationBaseTime(inc, clock);
+    if (base === null) continue;
+    if ((now - base) / 60000 < RESPONSE_TIMEOUT_MINUTES) continue;
+
+    // Re-read: the team may have accepted while this tick was running.
+    const fresh = await store.select("incidents", {
+      filters: { id: inc.id },
+      limit: 1,
     });
+    const row = fresh && fresh.length ? fresh[0] : null;
+    if (!row || !ESCALATION_ELIGIBLE_STATUSES.includes(row.status)) continue;
 
-    const now = Date.now();
-    for (const inc of all || []) {
-      // Timer starts from last status change (assignment) or creation.
-      const base = new Date(inc.updated_at || inc.created_at).getTime();
-      const ageMin = (now - base) / 60000;
-      if (ageMin < RESPONSE_TIMEOUT_MINUTES) continue;
+    const freshBase = escalationBaseTime(row, clock);
+    if (freshBase === null) continue;
+    if ((now - freshBase) / 60000 < RESPONSE_TIMEOUT_MINUTES) continue;
 
-      await store.update(
-        "incidents",
-        { id: inc.id },
-        { status: "ESCALATED", updated_at: new Date().toISOString() }
+    // Compare-and-set on status: if the row changed since the re-read,
+    // zero rows are updated and no event is written.
+    const updated = await store.update(
+      "incidents",
+      { id: row.id, status: row.status },
+      { status: "ESCALATED", updated_at: new Date().toISOString() }
+    );
+    if (!updated || updated.length === 0) continue;
+
+    await logEvent(
+      row.incident_id,
+      ACTION_EVENTS.ESCALATE,
+      "system",
+      `No acknowledgement within ${RESPONSE_TIMEOUT_MINUTES} min — escalated to control room (simulated)`
+    );
+    console.log(`⚠️ Incident ${row.incident_id} escalated (response timeout)`);
+  }
+}
+
+function scheduleEscalationTick(delayMs) {
+  if (escalationTimer) clearTimeout(escalationTimer);
+  escalationTimer = setTimeout(runEscalationTick, delayMs);
+  // Do not hold the process open just for the scheduler.
+  if (escalationTimer && typeof escalationTimer.unref === "function") {
+    escalationTimer.unref();
+  }
+}
+
+async function runEscalationTick() {
+  try {
+    await escalationTick();
+    if (escalationConsecutiveFailures > 0) {
+      console.log(
+        `✅ Escalation check recovered after ${escalationConsecutiveFailures} failed attempt(s)`
       );
-      await logEvent(
-        inc.incident_id,
-        ACTION_EVENTS.ESCALATE,
-        "system",
-        `No acknowledgement within ${RESPONSE_TIMEOUT_MINUTES} min — escalated to control room (simulated)`
-      );
-      console.log(`⚠️ Incident ${inc.incident_id} escalated (response timeout)`);
     }
+    escalationConsecutiveFailures = 0;
+    scheduleEscalationTick(ESCALATION_CHECK_MS);
   } catch (err) {
-    console.error("Escalation check failed:", err.message);
+    escalationConsecutiveFailures += 1;
+    const backoff = Math.min(
+      ESCALATION_CHECK_MS * Math.pow(2, escalationConsecutiveFailures - 1),
+      ESCALATION_MAX_BACKOFF_MS
+    );
+    console.error(
+      `❌ Escalation check FAILED (attempt ${escalationConsecutiveFailures}): ${err.message} — ` +
+        `no escalations processed this tick; retrying in ${Math.round(backoff / 1000)}s`
+    );
+    scheduleEscalationTick(backoff);
   }
 }
 
 function startEscalationScheduler() {
-  setInterval(escalationTick, require("../config/rescueConfig").ESCALATION_CHECK_MS);
+  // Idempotent: never run two scheduler loops in the same process.
+  if (escalationTimer) return;
+  scheduleEscalationTick(ESCALATION_CHECK_MS);
   console.log(
-    `⏱  Escalation scheduler running (timeout: ${RESPONSE_TIMEOUT_MINUTES} min)`
+    `⏱  Escalation scheduler running (timeout: ${RESPONSE_TIMEOUT_MINUTES} min, ` +
+      `check every ${Math.round(ESCALATION_CHECK_MS / 1000)}s, backoff up to ${Math.round(ESCALATION_MAX_BACKOFF_MS / 60000)} min on failures)`
   );
 }
 
@@ -918,11 +1084,27 @@ const requestRescue = async (req, res) => {
     }
 
     if (!alreadyRequested) {
+      // The ping is recorded against the incident it belongs to and carries
+      // the dispatch context the rescue team needs: where the incident is
+      // and which team owns it (when one is already assigned).
+      const context = [];
+      const location = incident.location || enriched.location;
+      if (location) context.push(`location: ${location}`);
+      if (incident.device_id) context.push(`device: ${incident.device_id}`);
+      const team = incident.assigned_team_id
+        ? (enriched.assigned_team_name
+            ? `${incident.assigned_team_id} (${enriched.assigned_team_name})`
+            : incident.assigned_team_id)
+        : null;
+      if (team) context.push(`assigned team: ${team}`);
+      else context.push("assigned team: unassigned");
+
       await logEvent(
         incident.incident_id,
         ACTION_EVENTS.REQUEST,
         (req.user && req.user.email) || "system",
-        `Rescue response requested from the control room by ${(req.user && req.user.email) || "unknown"}`
+        `Rescue response requested from the control room by ${(req.user && req.user.email) || "unknown"}` +
+          (context.length ? ` — ${context.join(" · ")}` : "")
       );
     }
 

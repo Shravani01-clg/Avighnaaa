@@ -138,6 +138,29 @@ const upsertLocation = async (req, res) => {
 
 // ─── Device health ─────────────────────────────────────────────
 
+/**
+ * Newest reading that can be trusted.
+ *
+ * A reading timestamped in the FUTURE means the reporting device's clock
+ * disagrees with this host. Such a row must not be presented as "the latest
+ * reading": it would pin the device to ONLINE forever and it would hide the
+ * real last report. The newest sane reading is used instead and the skew is
+ * reported alongside it.
+ */
+function newestUsableReading(readings) {
+  const now = Date.now();
+  const list = readings || [];
+  const newest = list.length > 0 ? list[0] : null;
+  const newestMs = newest ? new Date(newest.recorded_at).getTime() : NaN;
+  const clockSkew = Number.isFinite(newestMs) && newestMs > now;
+  const usable =
+    list.find((r) => {
+      const t = new Date(r.recorded_at).getTime();
+      return Number.isFinite(t) && t <= now;
+    }) || null;
+  return { newest, usable, clockSkew };
+}
+
 // GET /api/device-health
 // Online/offline + last seen + battery ONLY if the device actually sends it.
 const getDeviceHealth = async (req, res) => {
@@ -147,12 +170,13 @@ const getDeviceHealth = async (req, res) => {
     const health = [];
     for (const device of devices) {
       const deviceId = device.device_id;
-      const readings = await store.select("sensor_readings", {
+      const rows = await store.select("sensor_readings", {
         filters: { device_id: deviceId },
         orderBy: "recorded_at",
-        limit: 1,
+        limit: 50,
       });
-      const latest = readings && readings.length > 0 ? readings[0] : null;
+      const { usable, clockSkew } = newestUsableReading(rows);
+      const latest = usable;
       const lastSeen = latest ? new Date(latest.recorded_at) : null;
       const secondsAgo = lastSeen ? (Date.now() - lastSeen.getTime()) / 1000 : null;
       const online = secondsAgo !== null && secondsAgo <= DEVICE_OFFLINE_SECONDS;
@@ -163,6 +187,7 @@ const getDeviceHealth = async (req, res) => {
         status: online ? "ONLINE" : "OFFLINE",
         last_seen: lastSeen ? lastSeen.toISOString() : null,
         last_seen_seconds_ago: secondsAgo !== null ? Math.round(secondsAgo) : null,
+        last_seen_in_future: clockSkew,
         location: device.location || null,
       };
 
@@ -186,19 +211,21 @@ const getDeviceHealth = async (req, res) => {
 const getLatestReading = async (req, res) => {
   try {
     const { deviceId } = req.params;
-    const readings = await store.select("sensor_readings", {
+    const rows = await store.select("sensor_readings", {
       filters: { device_id: deviceId },
       orderBy: "recorded_at",
-      limit: 1,
+      limit: 50,
     });
-    if (!readings || readings.length === 0) {
+    const { usable, newest, clockSkew } = newestUsableReading(rows);
+    if (!usable && !newest) {
       return res.status(404).json({ success: false, message: "No readings for this device" });
     }
     res.json({
       success: true,
-      data: readings[0],
+      data: usable || newest,
       source: "latest_received",
       note: "Latest value received from the device (polling interval applies)",
+      clock_skew: clockSkew,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: "Server error", error: err.message });

@@ -9,13 +9,23 @@
  *   4. GET  /api/rescue-teams                  (rescue_team allowed)
  *   5. POST /api/incidents/:id/accept          (admin-only -> must be 403)
  *
- * Run: node test/rescue-login.e2e.js
+ * Run: node test/rescue-login.e2e.js --live
+ *
+ * This suite creates a temporary rescue team in the live database, so it
+ * refuses to run without the explicit --live opt-in.
  */
 require("dotenv").config();
 
+const { requireLiveDbWrite } = require("./live-guard");
+
+// This suite writes to the live database — never run it by accident.
+requireLiveDbWrite("rescue-login.e2e.js");
+
+const { requireEnv } = require("../scripts/accounts");
+
 const API = process.env.API_BASE_URL || "http://localhost:5002/api";
 const EMAIL = process.env.RESCUE_TEAM_EMAIL || "rescue.team@avighnaa.com";
-const PASSWORD = process.env.RESCUE_TEAM_PASSWORD || "Rescue@2026";
+const PASSWORD = requireEnv("RESCUE_TEAM_PASSWORD");
 
 let failures = 0;
 function check(label, condition, extra) {
@@ -62,6 +72,35 @@ async function api(path, token, options = {}) {
   return { status: res.status, body };
 }
 
+/**
+ * Remove a rescue team this test created.
+ *
+ * The public API intentionally has no DELETE for rescue teams (a team is a
+ * live operational resource), so the test cleans up after itself with the
+ * service-role key. If that key is unavailable the row is simply left
+ * behind — the test must never fail because of cleanup.
+ */
+async function removeTempTeam(teamId) {
+  const serviceKey =
+    process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!serviceKey) {
+    console.log(`  ℹ️  no service-role key — left ${teamId} in place`);
+    return;
+  }
+  try {
+    const { createClient } = require("@supabase/supabase-js");
+    const sb = createClient(process.env.SUPABASE_URL, serviceKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { error } = await sb.from("rescue_teams").delete().eq("team_id", teamId);
+    if (error) {
+      console.log(`  ℹ️  could not delete ${teamId}: ${error.message}`);
+    }
+  } catch (err) {
+    console.log(`  ℹ️  could not delete ${teamId}: ${err.message}`);
+  }
+}
+
 (async () => {
   console.log(`\n── Dedicated rescue account E2E (${EMAIL}) ──\n`);
 
@@ -104,10 +143,15 @@ async function api(path, token, options = {}) {
 
   // Genuinely admin-only surface: creating/editing rescue teams.
   // There is no admin role: rescue-team management IS a rescue capability.
+  //
+  // The team id is unique per run so the suite is repeatable: a fixed id
+  // (RT-99) made the second run fail with 409 "team_id already exists"
+  // and left a stray rescue team in the database on every execution.
+  const tempTeamId = `E2E-${Date.now().toString(36).toUpperCase()}`;
   const createTeam = await api("/rescue-teams", token, {
     method: "POST",
     body: JSON.stringify({
-      team_id: "RT-99",
+      team_id: tempTeamId,
       team_name: "E2E Temp Team",
       team_type: "FIRE_RESCUE",
     }),
@@ -117,12 +161,19 @@ async function api(path, token, options = {}) {
     createTeam.status === 201,
     `got ${createTeam.status}`
   );
+
+  // Clean up the team this run created so the live database is left exactly
+  // as it was found. There is no DELETE endpoint for rescue teams, so the
+  // row is removed with the service-role client (test-owned cleanup only).
+  if (createTeam.status === 201) {
+    await removeTempTeam(tempTeamId);
+  }
   const userTokens = await (await fetch(`${process.env.SUPABASE_URL}/auth/v1/token?grant_type=password`, {
     method: "POST",
     headers: { apikey: process.env.SUPABASE_PUBLISHABLE_KEY, "Content-Type": "application/json" },
     body: JSON.stringify({
-      email: process.env.CONTROL_USER_EMAIL || "controlroom.user@rockfall.com",
-      password: process.env.CONTROL_USER_PASSWORD || "User@2026",
+      email: process.env.CONTROL_USER_EMAIL || "admin@gmail.com",
+      password: requireEnv("CONTROL_USER_PASSWORD"),
     }),
   })).json();
   const userCreate = await api("/rescue-teams", userTokens.access_token, {

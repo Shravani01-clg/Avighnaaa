@@ -302,6 +302,21 @@ a { color: inherit; }
     animation: pulse-safe 2s infinite;
 }
 
+/* Sidebar system status reflects the REAL device connection state:
+   green = every device online, amber = some offline, red = all offline. */
+.warning-pulse {
+    background-color: var(--color-warning);
+    box-shadow: 0 0 0 rgba(201, 138, 18, 0.4);
+    animation: pulse-safe 2s infinite;
+}
+.critical-pulse {
+    background-color: var(--color-critical);
+    box-shadow: 0 0 0 rgba(196, 62, 62, 0.4);
+    animation: pulse-safe 2s infinite;
+}
+.status-title.is-warning { color: var(--color-warning); }
+.status-title.is-critical { color: var(--color-critical); }
+
 .header-right .safe-pulse { animation-duration: 2.5s; }
 .live-clock {
     font-family: var(--font-data);
@@ -761,6 +776,104 @@ a { color: inherit; }
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: 16px;
+}
+
+/* Device connection list — every registered device is shown, online or not,
+   so a silent device never quietly disappears from the dashboard. */
+.device-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 12px;
+}
+
+.device-card {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.device-card.is-offline { border-left: 3px solid rgba(196, 62, 62, 0.5); }
+.device-card.is-online { border-left: 3px solid rgba(63, 174, 106, 0.35); }
+.device-card.is-unknown { border-left: 3px solid rgba(133, 143, 156, 0.4); }
+
+.device-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.device-card-id {
+    font-family: var(--font-data);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-main);
+    letter-spacing: 0.4px;
+}
+
+.device-card-where {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.device-card-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.device-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.4px;
+}
+.device-status.is-online { color: var(--color-safe); }
+.device-status.is-offline { color: var(--color-critical); }
+.device-status.is-unknown { color: var(--text-muted); }
+
+.device-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+}
+.device-status.is-online .device-dot { box-shadow: 0 0 6px rgba(63, 174, 106, 0.7); }
+.device-status.is-offline .device-dot { box-shadow: 0 0 6px rgba(196, 62, 62, 0.7); }
+
+.device-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--border-color);
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.device-chip.is-sos {
+    border-color: rgba(255, 77, 77, 0.5);
+    color: var(--emergency-color);
+    font-weight: 700;
+}
+.device-chip.is-active {
+    border-color: rgba(201, 138, 18, 0.5);
+    color: var(--color-warning);
+}
+.device-chip.is-fall {
+    border-color: rgba(196, 62, 62, 0.5);
+    color: var(--color-critical);
+    font-weight: 700;
 }
 
 .worker-card {
@@ -2038,17 +2151,19 @@ input[type="number"]:focus {
 
 .btn-emergency-min:hover { background: rgba(255, 77, 77, 0.1); }
 
-/* Minimized banner while SOS remains active */
+/* Minimized banner while SOS remains active.
+   Anchored bottom-right so it can never cover the dashboard header, the
+   navigation, charts or tables — it is a small floating indicator with a
+   single "Reopen" affordance. */
 #emergency-mini-bar {
     position: fixed;
-    top: 12px;
-    left: 50%;
-    transform: translateX(-50%);
+    bottom: 18px;
+    right: 18px;
     z-index: 2900;
     display: none;
     align-items: center;
     gap: 10px;
-    padding: 8px 18px;
+    padding: 8px 16px;
     border-radius: 999px;
     border: 1px solid rgba(255, 77, 77, 0.5);
     background: rgba(26, 5, 5, 0.95);
@@ -2071,8 +2186,17 @@ input[type="number"]:focus {
     padding-left: 10px;
 }
 
-/* Dim normal dashboard content while emergency overlay is up */
-body.emergency-active .app-container { filter: brightness(0.45) saturate(0.6); pointer-events: none; }
+/* Dim normal dashboard content while the emergency overlay is up.
+   When the admin MINIMIZES (returned to the dashboard) only the fixed
+   banner stays — the dashboard must remain fully usable, so the dim /
+   pointer-events lock applies to the full-screen state only. */
+body.emergency-active.emergency-fullscreen .app-container { filter: brightness(0.45) saturate(0.6); pointer-events: none; }
+
+/* The minimized indicator floats over the bottom-right corner. Reserve the
+   matching space at the end of the page so it can never hide the last row
+   of dashboard content (cards, tables or charts). */
+body.emergency-active .page { padding-bottom: 72px; }
+body.emergency-active:not(.emergency-fullscreen) .page { transition: padding-bottom 0.2s ease; }
 
 /* Responsive: Emergency Mode on small screens */
 @media (max-width: 768px) {
@@ -2509,4 +2633,444 @@ body.emergency-active .app-container { filter: brightness(0.45) saturate(0.6); p
 
 .login-rescue-btn.active {
     box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.6);
+}
+
+/* ==========================================================================
+   SOS COORDINATION LAYER — minimizable emergency view, SOS detail modal,
+   per-alert AI block, rescue ping, response panel, SOS history page.
+   ========================================================================== */
+
+/* Emergency overlay: multi-alert switcher */
+.emergency-switcher {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 18px;
+}
+
+.emg-chip {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 77, 77, 0.35);
+    color: rgba(255, 160, 160, 0.9);
+    border-radius: 999px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+}
+
+.emg-chip:hover { background: rgba(255, 77, 77, 0.12); }
+
+.emg-chip.active {
+    background: rgba(255, 77, 77, 0.2);
+    border-color: var(--emergency-color);
+    color: #fff;
+    box-shadow: 0 0 10px rgba(255, 77, 77, 0.35);
+}
+
+/* Emergency overlay: per-alert AI analysis + detail action */
+.emergency-ai {
+    margin-top: 12px;
+    padding: 12px 14px;
+    border: 1px dashed rgba(201, 106, 18, 0.55);
+    background: rgba(201, 106, 18, 0.08);
+    border-radius: 6px;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: rgba(255, 226, 196, 0.95);
+}
+
+.emergency-ai strong {
+    display: block;
+    color: var(--accent-orange);
+    letter-spacing: 1px;
+    font-size: 11px;
+    margin-bottom: 4px;
+}
+
+.emergency-ai.unavailable {
+    border-color: var(--border-light);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--text-muted);
+}
+
+.emergency-ai-note {
+    margin-top: 6px;
+    font-size: 11px;
+    font-style: italic;
+    color: rgba(255, 160, 160, 0.65);
+}
+
+.emergency-card-actions {
+    margin-top: 12px;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.btn-emergency-detail {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border-radius: 5px;
+    border: 1px solid rgba(255, 77, 77, 0.5);
+    background: rgba(255, 77, 77, 0.12);
+    color: #ffd6d6;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    cursor: pointer;
+    font-family: var(--font-sans);
+    transition: background 0.15s ease;
+}
+
+.btn-emergency-detail:hover { background: rgba(255, 77, 77, 0.22); }
+.btn-emergency-detail i { width: 14px; height: 14px; }
+
+/* Dashboard: latest recorded rescue response line */
+.dash-emergency-latest {
+    margin-top: 0.6rem;
+    padding: 0.5rem 0.7rem;
+    border-left: 3px solid var(--color-info);
+    background: rgba(52, 108, 201, 0.08);
+    border-radius: 0 6px 6px 0;
+}
+
+/* ── SOS detail modal ─────────────────────────────── */
+/* Above the full-screen emergency overlay (z-index 3000) so the admin
+   can open an alert's details straight from Emergency Mode. */
+#sos-detail-modal { z-index: 3200; }
+.sos-modal-content { max-width: 920px; width: 94%; }
+.sos-modal-head-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sos-modal-sub { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+.sos-modal-head-right { display: flex; align-items: center; gap: 8px; }
+.sos-modal-toolbar {
+    flex-shrink: 0;
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+    padding: 10px 24px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-card);
+}
+
+.sos-state {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-bottom: 14px;
+}
+
+.sos-state.error { border-color: rgba(196, 62, 62, 0.5); color: #f0a1a1; }
+.sos-block { margin-top: 20px; }
+.sos-block-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+/* Response status track (real incident status) */
+.sos-status-track { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.sos-step {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    padding: 5px 10px;
+    border-radius: 12px;
+    border: 1px solid var(--border-light);
+    color: var(--text-muted);
+    background: var(--bg-surface);
+}
+
+.sos-step.done {
+    border-color: rgba(63, 174, 106, 0.5);
+    color: var(--color-safe);
+    background: rgba(63, 174, 106, 0.08);
+}
+
+.sos-step.current {
+    border-color: rgba(201, 106, 18, 0.6);
+    color: #f0b27a;
+    background: rgba(201, 106, 18, 0.12);
+    box-shadow: 0 0 8px rgba(201, 106, 18, 0.15);
+}
+
+.sos-step.alert {
+    border-color: rgba(196, 62, 62, 0.6);
+    color: #f0a1a1;
+    background: rgba(196, 62, 62, 0.12);
+}
+
+/* Ping panel */
+.sos-team-panel {
+    margin-top: 8px;
+    padding: 12px 14px;
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.sos-team-panel .team-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 4px 0;
+}
+
+.sos-team-panel .team-rec { font-weight: 700; color: var(--text-main); }
+.sos-ping-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.btn-ping { display: inline-flex; align-items: center; gap: 8px; }
+.btn-ping i { width: 15px; height: 15px; }
+.btn-ping:disabled { opacity: 0.6; cursor: wait; }
+.sos-ping-msg { font-size: 12px; color: var(--text-muted); }
+.sos-ping-msg.ok { color: var(--color-safe); }
+.sos-ping-msg.err { color: var(--color-critical); }
+
+/* AI block — visually distinct from sensor readings and human actions */
+.sos-ai {
+    margin-top: 8px;
+    padding: 14px 16px;
+    border: 1px dashed rgba(201, 106, 18, 0.5);
+    border-radius: 8px;
+    background: rgba(201, 106, 18, 0.06);
+}
+
+.sos-ai h4 {
+    font-size: 12px;
+    letter-spacing: 1.2px;
+    color: var(--accent-orange);
+    text-transform: uppercase;
+    margin: 0 0 8px;
+}
+
+.sos-ai p { font-size: 13px; line-height: 1.55; margin: 0 0 8px; white-space: pre-wrap; }
+.sos-ai .ai-row {
+    display: flex;
+    gap: 8px;
+    font-size: 12px;
+    padding: 3px 0;
+    border-bottom: 1px dashed var(--border-light);
+}
+
+.sos-ai .ai-row .k { color: var(--text-muted); min-width: 160px; flex-shrink: 0; }
+.sos-ai.unavailable { border-color: var(--border-light); background: var(--bg-surface); color: var(--text-muted); }
+.sos-ai .recommended {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    background: rgba(59, 130, 246, 0.18);
+    color: #93c5fd;
+    border: 1px solid rgba(59, 130, 246, 0.45);
+    border-radius: 10px;
+    padding: 3px 10px;
+}
+
+/* Timeline actor chips + message text */
+.tl-actor {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 1px 8px;
+    border-radius: 8px;
+    margin-left: 6px;
+    border: 1px solid var(--border-light);
+    color: var(--text-muted);
+}
+
+.tl-actor.rescue { color: #fca5a5; border-color: rgba(220, 38, 38, 0.45); }
+.tl-actor.admin { color: #93c5fd; border-color: rgba(59, 130, 246, 0.45); }
+.tl-actor.system { color: var(--text-muted); }
+.tl-msg {
+    font-size: 12px;
+    color: var(--text-main);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin-top: 4px;
+}
+
+/* ── SOS history page ──────────────────────────────── */
+.sos-history-source { margin: 0 0 12px; }
+.sos-history-table td { font-size: 12px; }
+.sos-history-table .row-ai { max-width: 260px; font-size: 11px; color: var(--text-muted); }
+.sos-history-table tr.row-sos td { background: rgba(255, 77, 77, 0.04); }
+.sos-history-table tr.row-sos td:first-child { border-left: 3px solid var(--emergency-color); }
+.badge-sos-active {
+    background: rgba(255, 77, 77, 0.15);
+    color: var(--emergency-color);
+    border: 1px solid rgba(255, 77, 77, 0.5);
+}
+
+.link-open {
+    background: none;
+    border: none;
+    color: var(--accent-orange);
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 4px 6px;
+    font-family: var(--font-sans);
+}
+
+.link-open:hover { text-decoration: underline; }
+.filter-check { flex-direction: row !important; align-items: center; gap: 6px !important; }
+
+/* ── Rescue inbox tabs + states ────────────────────── */
+.inbox-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.inbox-tab {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-sans);
+    transition: all 0.15s ease;
+}
+
+.inbox-tab:hover { border-color: var(--text-muted); color: var(--text-main); }
+.inbox-tab.active {
+    border-color: var(--accent-orange);
+    color: #f0b27a;
+    background: rgba(201, 106, 18, 0.12);
+}
+
+.inbox-count {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    padding: 1px 7px;
+}
+
+.rescue-inbox-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+}
+
+.rescue-inbox-status.error { border-color: rgba(196, 62, 62, 0.5); color: #f0a1a1; }
+.req-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.6px;
+    color: #fde68a;
+    border: 1px solid rgba(201, 138, 18, 0.5);
+    background: rgba(201, 138, 18, 0.12);
+    border-radius: 10px;
+    padding: 2px 9px;
+}
+
+.other-team-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    color: var(--text-muted);
+    border: 1px dashed var(--border-light);
+    border-radius: 10px;
+    padding: 2px 9px;
+}
+
+/* ── Rescue response panel (detail) ────────────────── */
+.response-panel {
+    border: 1px solid rgba(220, 38, 38, 0.35);
+    border-radius: 8px;
+    padding: 14px 16px;
+    background: rgba(220, 38, 38, 0.05);
+}
+
+.response-panel h4 {
+    margin: 0 0 4px;
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #fca5a5;
+}
+
+.response-presets { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.response-preset {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 7px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-light);
+    background: var(--bg-surface);
+    color: var(--text-main);
+    cursor: pointer;
+    text-align: left;
+    font-family: var(--font-sans);
+    transition: border-color 0.15s ease;
+}
+
+.response-preset:hover:not(:disabled) { border-color: var(--accent-orange); }
+.response-preset:disabled { opacity: 0.4; cursor: not-allowed; }
+.response-note-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.response-note-row input {
+    flex: 1;
+    min-width: 220px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    padding: 8px 10px;
+    color: var(--text-main);
+    font-size: 12px;
+    font-family: var(--font-sans);
+}
+
+.response-msg { font-size: 11px; margin-top: 8px; }
+.response-msg.ok { color: var(--color-safe); }
+.response-msg.err { color: var(--color-critical); }
+.ack-row { margin-top: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+/* ── Responsive (SOS coordination) ─────────────────── */
+@media (max-width: 768px) {
+    .sos-modal-content { width: 100%; max-width: 100%; height: 100%; max-height: 100%; border-radius: 0; }
+    .sos-modal-toolbar { flex-wrap: wrap; }
+    .emergency-switcher { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; }
+    .emergency-card-actions .btn-emergency-detail { width: 100%; justify-content: center; }
+    .sos-ping-row .btn-ping { width: 100%; justify-content: center; }
+    .inbox-tabs { overflow-x: auto; flex-wrap: wrap; }
+    .sos-ai .ai-row { flex-direction: column; gap: 2px; }
+    .sos-ai .ai-row .k { min-width: 0; }
+    .response-preset { width: 100%; }
+    .rescue-inbox-status { flex-wrap: wrap; }
 }

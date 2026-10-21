@@ -9,9 +9,12 @@
 -- HOW TO USE (2 steps, in this order):
 --   Step 1 — Supabase Dashboard > Authentication > Users > "Add user"
 --            Email:       rescue.team@avighnaa.com
---            Password:    Rescue@2026
+--            Password:    <your own password — keep it in .env, not in this repo>
 --            ☑ Auto Confirm User
 --   Step 2 — Supabase Dashboard > SQL Editor > paste THIS file > Run
+--
+-- The account password is deliberately NOT stored in this repository: it lives
+-- in .env (gitignored) as RESCUE_TEAM_PASSWORD.
 --
 -- This file is IDEMPOTENT: safe to run before or after the auth user exists.
 -- It NEVER inserts a made-up uuid — it looks the real id up from auth.users

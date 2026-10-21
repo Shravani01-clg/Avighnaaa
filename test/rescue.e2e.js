@@ -13,33 +13,30 @@
  */
 require("dotenv").config();
 
+const { requireLiveDbWrite } = require("./live-guard");
+
+// This suite writes to the live database — never run it by accident.
+requireLiveDbWrite("rescue.e2e.js");
+
 const { createIncidentFromAlert } = require("../controllers/incidentController");
+const { cleanupTestIncidents, isTestDevice } = require("./cleanup");
 
 const API = process.env.API_BASE_URL || "http://localhost:5002/api";
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 const ANON = process.env.SUPABASE_PUBLISHABLE_KEY;
 
-const ACCOUNTS = [
-  {
-    label: "RESCUE_TEAM",
-    email: process.env.RESCUE_TEAM_EMAIL || "rescue.team@avighnaa.com",
-    password: process.env.RESCUE_TEAM_PASSWORD || "Rescue@2026",
-    role: "rescue_team",
-    team: process.env.RESCUE_TEAM_ID || "RT-01",
-  },
-  {
-    label: "USER",
-    email: process.env.CONTROL_USER_EMAIL || "controlroom.user@rockfall.com",
-    password: process.env.CONTROL_USER_PASSWORD || "User@2026",
-    role: "user",
-    team: null,
-  },
-];
+const { buildAccounts } = require("../scripts/accounts");
+
+const ACCOUNTS = buildAccounts();
 
 let passed = 0;
 let failed = 0;
 const failures = [];
+
+// Incidents this run created — removed again by the cleanup at the end so
+// the suite leaves the live database exactly as it found it.
+const createdIncidents = [];
 
 function check(label, ok, extra) {
   if (ok) {
@@ -59,33 +56,89 @@ const adminHeaders = () => ({
   "Content-Type": "application/json",
 });
 
+/**
+ * Make sure the demo accounts exist and carry the right role.
+ *
+ * IMPORTANT: the password of an EXISTING account is never written. Sending it
+ * would silently overwrite the password the operator chose in the Supabase
+ * dashboard and invalidate every live session for that user. Only the
+ * server-controlled app_metadata (role / team) is corrected.
+ *
+ * When the configured password does not match the account, the suite says so
+ * and points at the environment variable to fix — it does not "repair" it.
+ */
 async function ensureAccounts() {
   const list = await fetch(`${SUPABASE_URL}/auth/v1/admin/users?page=1&per_page=200`, {
     headers: adminHeaders(),
   });
   const existing = (await list.json()).users || [];
+  const passwordMismatches = [];
 
   for (const acc of ACCOUNTS) {
     const found = existing.find(
       (u) => String(u.email || "").toLowerCase() === acc.email.toLowerCase()
     );
     const meta = acc.team ? { role: acc.role, team_id: acc.team } : { role: acc.role };
-    const payload = { password: acc.password, email_confirm: true, app_metadata: meta };
 
     if (found) {
-      await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${found.id}`, {
-        method: "PUT",
-        headers: adminHeaders(),
-        body: JSON.stringify(payload),
-      });
-    } else {
-      await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
-        method: "POST",
-        headers: adminHeaders(),
-        body: JSON.stringify({ email: acc.email, ...payload }),
-      });
+      // Role / team metadata only — the password is NOT part of this update.
+      const metaOk =
+        found.app_metadata &&
+        found.app_metadata.role === meta.role &&
+        (meta.team_id === undefined ||
+          found.app_metadata.team_id === meta.team_id);
+
+      if (!metaOk) {
+        await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${found.id}`, {
+          method: "PUT",
+          headers: adminHeaders(),
+          body: JSON.stringify({ app_metadata: meta }),
+        });
+        console.log(`   ↻ fixed app_metadata for ${acc.email} (role=${meta.role})`);
+      }
+
+      // Report — do not overwrite — a password that no longer matches.
+      let credentialsOk = false;
+      try {
+        const probe = await fetch(
+          `${SUPABASE_URL}/auth/v1/token?grant_type=password`,
+          {
+            method: "POST",
+            headers: { apikey: ANON, "Content-Type": "application/json" },
+            body: JSON.stringify({ email: acc.email, password: acc.password }),
+          }
+        );
+        credentialsOk = probe.ok;
+      } catch {
+        credentialsOk = false;
+      }
+
+      if (!credentialsOk) {
+        passwordMismatches.push(acc.email);
+        console.log(
+          `   ⚠️  ${acc.email} exists but the configured password does not match. ` +
+            `The suite will NOT overwrite your password — set ` +
+            `${acc.passwordEnv} in .env to the password that works.`
+        );
+      }
+      continue;
     }
+
+    // Account does not exist yet → create it with the configured password.
+    await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
+      method: "POST",
+      headers: adminHeaders(),
+      body: JSON.stringify({
+        email: acc.email,
+        password: acc.password,
+        email_confirm: true,
+        app_metadata: meta,
+      }),
+    });
+    console.log(`   + created ${acc.email} (role=${meta.role})`);
   }
+
+  return passwordMismatches;
 }
 
 async function signIn(email, password) {
@@ -95,7 +148,14 @@ async function signIn(email, password) {
     body: JSON.stringify({ email, password }),
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`sign-in ${email} failed: ${body.msg || res.statusText}`);
+  if (!res.ok) {
+    throw new Error(
+      `sign-in ${email} failed: ${body.msg || res.statusText}. ` +
+        `If you changed this password in the Supabase dashboard, put it in .env ` +
+        `(RESCUE_TEAM_PASSWORD / CONTROL_USER_PASSWORD) — the suite will not ` +
+        `overwrite your password.`
+    );
+  }
   return body.access_token;
 }
 
@@ -122,6 +182,11 @@ async function api(path, token, options = {}) {
  * The rescue account belongs to RT-01. Assignment correctly refuses a team
  * that is BUSY, and earlier runs can leave RT-01 holding open incidents, so
  * release it first. Uses the real cancel endpoint — no test-only back door.
+ *
+ * ONLY incidents that belong to a test run are released. An incident created
+ * by a real device (or by a person) is never cancelled by the test suite —
+ * if one is holding the team, the suite reports that instead of destroying
+ * live operational data.
  */
 async function freeTeam(token, teamId) {
   const pending = await api("/incidents", token);
@@ -129,6 +194,12 @@ async function freeTeam(token, teamId) {
     (i) => i.assigned_team_id === teamId && !["RESOLVED", "CANCELLED"].includes(i.status)
   );
   for (const inc of mine) {
+    if (!isTestDevice(inc.device_id)) {
+      console.log(
+        `   ⚠️  ${inc.incident_id} (${inc.device_id}) is holding ${teamId} and is NOT a test record — left untouched`
+      );
+      continue;
+    }
     await api(`/incidents/${inc.incident_id}/cancel`, token, {
       method: "POST",
       body: JSON.stringify({ notes: "E2E cleanup — releasing the team" }),
@@ -218,6 +289,7 @@ async function freeTeam(token, teamId) {
   check("incident auto-created", Boolean(incident && incident.incident_id));
   if (!incident) return finish();
   const INC = incident.incident_id;
+  createdIncidents.push(INC);
   console.log(`     incident = ${INC}`);
 
   const dupe = await createIncidentFromAlert({
@@ -239,6 +311,43 @@ async function freeTeam(token, teamId) {
 
   const portal = await api("/incidents", tokens.rescue_team);
   check("RESCUE_TEAM portal sees the incident", (portal.body.data || []).some((i) => i.incident_id === INC));
+
+  // The portal must show the REQUEST against the same incident, and the
+  // recorded ping must carry the dispatch context (location / device / team)
+  // so the rescue team knows where to go and who owns the mission.
+  const portalRow = (portal.body.data || []).find((i) => i.incident_id === INC);
+  check(
+    "portal shows rescue_requested on the SAME incident",
+    Boolean(portalRow && portalRow.rescue_requested === true)
+  );
+
+  const reqTl = await api(`/incidents/${INC}/timeline`, tokens.rescue_team);
+  const reqEvents = (reqTl.body.data || []).filter((e) => e.event_type === "RESCUE_REQUESTED");
+  const reqEvent = reqEvents[0];
+  check("ping is recorded on the incident timeline", Boolean(reqEvent));
+  check(
+    "ping records who requested it",
+    Boolean(
+      reqEvent &&
+        reqEvent.performed_by === ACCOUNTS.find((a) => a.role === "user").email
+    ),
+    reqEvent && reqEvent.performed_by
+  );
+  check(
+    "ping carries the dispatch context (location / device / team)",
+    Boolean(
+      reqEvent &&
+        /location:/.test(reqEvent.notes || "") &&
+        /device:/.test(reqEvent.notes || "") &&
+        /assigned team:/.test(reqEvent.notes || "")
+    ),
+    reqEvent && reqEvent.notes
+  );
+  check(
+    "a repeat ping does not duplicate the timeline event",
+    reqEvents.length === 1,
+    `events=${reqEvents.length}`
+  );
 
   // ── 4. Rescue team assigns ──────────────────────────────────
   console.log("\n── E. RESCUE_TEAM assigns a team ──");
@@ -354,7 +463,12 @@ async function freeTeam(token, teamId) {
 
   finish();
 
-  function finish() {
+  async function finish() {
+    // Remove the rows this run created. Only the incident ids created above
+    // are touched — existing user, worker, rescue-team and incident records
+    // are never read for deletion and never modified.
+    await cleanupTestIncidents(createdIncidents);
+
     console.log(`\n${"─".repeat(52)}`);
     if (failed === 0) {
       console.log(`🎉 ALL ${passed} E2E CHECKS PASSED\n`);

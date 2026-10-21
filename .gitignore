@@ -1,7 +1,19 @@
 .env
+.env.*
+!.env.example
+
+# Local backups of secret-bearing files — never commit these.
+.env.bak*
+*.bak
+*.bak-*
+
+# Local run logs
+*.log
+
 node_modules/
 target/
 __pycache__/
 *.pyc
+*.pyo
 .freebuff/
 .worktrees/

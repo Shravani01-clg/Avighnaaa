@@ -9,11 +9,53 @@ const rescueState = {
     teamId: null,
     email: null,
     incidents: [],
+    completed: [],          // closed incidents (/incidents/history, rescue role)
+    inboxFilter: 'all',     // all | new | acknowledged | inprogress | completed
+    renderedStatus: null,   // status of the incident currently rendered
+    lastResponseMsg: null,  // one-shot feedback after a recorded update
     teams: [],
     devices: [],
     selectedId: null,
     refreshTimer: null,
     tickTimer: null,
+};
+
+// Mirror of the backend STATUS_TRANSITIONS map (display only — the
+// backend remains the single authority and still validates every call).
+const RESCUE_TRANSITIONS = {
+    AWAITING_RESPONSE: ['ASSIGN', 'CANCEL', 'ESCALATE'],
+    ASSIGNED: ['ACCEPT', 'REASSIGN', 'CANCEL', 'ESCALATE'],
+    ACCEPTED: ['EN_ROUTE', 'CANCEL', 'ESCALATE'],
+    EN_ROUTE: ['ARRIVE', 'ESCALATE'],
+    ON_SCENE: ['START_RESCUE', 'ESCALATE'],
+    RESCUE_IN_PROGRESS: ['PERSON_SAFE', 'ESCALATE'],
+    PERSON_SAFE: ['RESOLVE'],
+    ESCALATED: ['ASSIGN', 'ACCEPT', 'CANCEL', 'RESOLVE'],
+    RESOLVED: [],
+    CANCELLED: [],
+};
+
+// "Send update to control room" presets. Every preset is a REAL mission
+// action recorded on the incident timeline (with an optional custom
+// message attached as the action's notes). A preset whose transition is
+// not currently legal is shown disabled — nothing is ever faked.
+const RESPONSE_PRESETS = [
+    { label: 'Alert received. Assessing the situation.', endpoint: 'accept', action: 'ACCEPT' },
+    { label: 'Rescue team dispatched.', endpoint: 'en-route', action: 'EN_ROUTE' },
+    { label: 'Team is approaching the incident location.', endpoint: 'en-route', action: 'EN_ROUTE' },
+    { label: 'Team arrived at the incident location.', endpoint: 'arrive', action: 'ARRIVE' },
+    { label: 'Rescue operation in progress.', endpoint: 'start-rescue', action: 'START_RESCUE' },
+    { label: 'Person is safe — securing the scene.', endpoint: 'person-safe', action: 'PERSON_SAFE' },
+    { label: 'Rescue operation completed.', endpoint: 'resolve', action: 'RESOLVE' },
+    { label: 'Unable to respond — assistance required from another team.', endpoint: 'escalate', action: 'ESCALATE' },
+];
+
+// Inbox filter groups (statuses come from the backend incident rows).
+const INBOX_GROUPS = {
+    new: ['AWAITING_RESPONSE', 'ASSIGNED', 'ESCALATED'],
+    acknowledged: ['ACCEPTED', 'EN_ROUTE'],
+    inprogress: ['ON_SCENE', 'RESCUE_IN_PROGRESS', 'PERSON_SAFE'],
+    completed: ['RESOLVED', 'CANCELLED'],
 };
 
 // Status → mission action (mirrors backend STATUS_TRANSITIONS)
@@ -80,7 +122,11 @@ function esc(value) {
 
 function timeAgo(iso) {
     if (!iso) return '--';
-    const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+    const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+    // A timestamp in the future means the reporting clock disagrees with
+    // this one — say so instead of pretending it just happened.
+    if (diff < 0) return 'clock skew';
+    const s = diff;
     if (s < 60) return `${s}s ago`;
     const m = Math.floor(s / 60);
     if (m < 60) return `${m}m ago`;
@@ -225,6 +271,17 @@ window.addEventListener('avighnaa:logout', () => {
 // ─── Rescue login button ───────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Inbox filter tabs (Feature 7: which part of the response workflow)
+    document.querySelectorAll('.inbox-tab[data-inbox-filter]').forEach(tab => {
+        tab.addEventListener('click', () => {
+            setInboxFilter(tab.getAttribute('data-inbox-filter'));
+        });
+    });
+
+    // Retry button for a failed inbox load
+    document.getElementById('rescue-inbox-retry')
+        ?.addEventListener('click', () => loadRescueInbox().catch(() => {}));
+
     const btn = document.getElementById('rescue-login-btn');
     if (btn) {
         btn.addEventListener('click', () => {
@@ -276,7 +333,20 @@ async function silentRefresh() {
         const onRescue = document.getElementById('page-rescue')?.classList.contains('active');
         const onControl = document.getElementById('page-rescuecontrol')?.classList.contains('active');
         const onHistory = document.getElementById('page-history')?.classList.contains('active');
-        if (onRescue) await loadRescueInbox();
+        if (onRescue) {
+            await loadRescueInbox();
+            // Keep the open incident's detail fresh: re-render when its
+            // status changed (e.g. control room reassigned/escalated) so
+            // new responses appear without a manual refresh.
+            if (rescueState.selectedId) {
+                const inc = rescueState.incidents.find(
+                    i => i.incident_id === rescueState.selectedId
+                );
+                if (inc && inc.status !== rescueState.renderedStatus) {
+                    await openIncident(rescueState.selectedId);
+                }
+            }
+        }
         if (onControl) await loadAdminIncidents();
         if (onHistory) await rescueLoadHistory();
     } catch { /* poll errors are non-fatal */ }
@@ -294,9 +364,45 @@ async function rescueRefresh() {
 window.rescueRefresh = rescueRefresh;
 
 async function loadRescueInbox() {
-    const res = await rescueFetch('/incidents');
-    const all = res.data || [];
+    const list = document.getElementById('rescue-inbox-list');
+    const statusEl = document.getElementById('rescue-inbox-status');
+    const statusText = document.getElementById('rescue-inbox-status-text');
+
+    // Loading state — keep the previous list visible under the note.
+    if (statusEl && statusText) {
+        statusEl.classList.remove('hidden', 'error');
+        statusText.textContent = 'Loading emergencies…';
+    }
+
+    let all;
+    try {
+        const res = await rescueFetch('/incidents');
+        all = res.data || [];
+        if (statusEl) statusEl.classList.add('hidden');
+    } catch (err) {
+        rescueState.incidents = [];
+        if (list) {
+            list.innerHTML = '<p class="rescue-empty">Could not load emergencies.</p>';
+        }
+        if (statusEl && statusText) {
+            statusEl.classList.remove('hidden');
+            statusEl.classList.add('error');
+            statusText.textContent = `Failed to load the emergency inbox: ${err.message}`;
+        }
+        updateInboxCounts([]);
+        return;
+    }
+
     rescueState.incidents = all;
+
+    // Completed operations (closed incidents) are only listable with the
+    // rescue-team role — fetched for the Completed view.
+    if (rescueState.inboxFilter === 'completed' && rescueState.role === 'rescue_team') {
+        try {
+            const hist = await rescueFetch('/incidents/history?limit=25');
+            rescueState.completed = hist.data || [];
+        } catch { /* keep previous list on failure */ }
+    }
 
     const active = all.filter(i => ACTIVE_STATUSES.includes(i.status));
     const crit = active.filter(i => i.severity === 'CRITICAL').length;
@@ -316,10 +422,19 @@ async function loadRescueInbox() {
         badge.style.display = active.length > 0 ? '' : 'none';
     }
 
-    const list = document.getElementById('rescue-inbox-list');
+    updateInboxCounts(active);
+
     if (!list) return;
 
-    const sorted = [...active].sort((a, b) => {
+    const filter = rescueState.inboxFilter;
+    const source = filter === 'completed' ? rescueState.completed : active;
+    const filtered = filter === 'all'
+        ? active
+        : (INBOX_GROUPS[filter]
+            ? source.filter(i => INBOX_GROUPS[filter].includes(i.status))
+            : source);
+
+    const sorted = [...filtered].sort((a, b) => {
         const rank = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
         const sr = (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9);
         if (sr !== 0) return sr;
@@ -327,13 +442,24 @@ async function loadRescueInbox() {
     });
 
     if (sorted.length === 0) {
-        list.innerHTML = '<p class="rescue-empty">No active emergencies. All clear.</p>';
+        const emptyByFilter = {
+            completed: 'No completed operations yet.',
+            new: 'No emergencies waiting for acknowledgement. All clear.',
+            acknowledged: 'No acknowledged emergencies right now.',
+            inprogress: 'No rescue operations in progress.',
+        };
+        list.innerHTML = `<p class="rescue-empty">${
+            emptyByFilter[filter] || 'No active emergencies. All clear.'
+        }</p>`;
         return;
     }
 
     list.innerHTML = sorted.map(inc => {
         const sel = inc.incident_id === rescueState.selectedId ? ' selected' : '';
         const overdue = isOverdue(inc);
+        const otherTeam = inc.assigned_team_id && rescueState.teamId &&
+            inc.assigned_team_id !== rescueState.teamId;
+        const closed = ['RESOLVED', 'CANCELLED'].includes(inc.status);
         return `
         <div class="inc-card ${severityClass(inc.severity)}${sel}"
              onclick="openIncident('${esc(inc.incident_id)}')">
@@ -353,6 +479,9 @@ async function loadRescueInbox() {
             </div>
             <div class="inc-meta" style="margin-top:6px;">
                 ${statusBadge(inc.status)}
+                ${inc.rescue_requested ? '<span class="req-chip">🔔 RESCUE REQUESTED</span>' : ''}
+                ${otherTeam ? `<span class="other-team-chip">Assigned to ${esc(inc.assigned_team_id)}</span>` : ''}
+                ${closed ? '<span class="badge badge-info">Closed</span>' : ''}
             </div>
             ${overdue ? `
             <div class="overdue-strip">
@@ -362,6 +491,32 @@ async function loadRescueInbox() {
     }).join('');
 }
 window.loadRescueInbox = loadRescueInbox;
+
+function updateInboxCounts(active) {
+    const counts = {
+        all: active.length,
+        new: active.filter(i => INBOX_GROUPS.new.includes(i.status)).length,
+        acknowledged: active.filter(i => INBOX_GROUPS.acknowledged.includes(i.status)).length,
+        inprogress: active.filter(i => INBOX_GROUPS.inprogress.includes(i.status)).length,
+        completed: rescueState.completed.length,
+    };
+
+    document.querySelectorAll('[data-inbox-count]').forEach(el => {
+        const key = el.getAttribute('data-inbox-count');
+        el.textContent = counts[key] ?? 0;
+    });
+}
+
+function setInboxFilter(filter) {
+    rescueState.inboxFilter = filter || 'all';
+    document.querySelectorAll('.inbox-tab').forEach(tab => {
+        const active = tab.getAttribute('data-inbox-filter') === rescueState.inboxFilter;
+        tab.classList.toggle('active', active);
+        tab.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    loadRescueInbox().catch(() => {});
+}
+window.setInboxFilter = setInboxFilter;
 
 function isOverdue(inc) {
     if (!['AWAITING_RESPONSE', 'ASSIGNED', 'ACCEPTED'].includes(inc.status)) return null;
@@ -392,6 +547,10 @@ function setText(id, value) {
 // ─── INCIDENT DETAIL ───────────────────────────────────────────
 
 async function openIncident(incidentId) {
+    if (rescueState.selectedId !== incidentId) {
+        // Fresh incident view → clear one-shot feedback from the last one.
+        rescueState.lastResponseMsg = null;
+    }
     rescueState.selectedId = incidentId;
     const body = document.getElementById('rescue-detail-body');
     if (!body) return;
@@ -428,7 +587,11 @@ async function openIncident(incidentId) {
         renderIncidentDetail(inc, timeline, reading, readingNote, loc);
         loadRescueInbox();
     } catch (err) {
-        body.innerHTML = `<p class="rescue-empty">Failed to load incident: ${esc(err.message)}</p>`;
+        body.innerHTML = `
+            <p class="rescue-empty">Failed to load incident: ${esc(err.message)}</p>
+            <button class="btn-outline" onclick="openIncident('${esc(incidentId)}')">
+                Retry
+            </button>`;
     }
 }
 window.openIncident = openIncident;
@@ -436,6 +599,9 @@ window.openIncident = openIncident;
 function renderIncidentDetail(inc, timeline, reading, readingNote, loc) {
     const body = document.getElementById('rescue-detail-body');
     if (!body) return;
+
+    // Remember what is on screen so the poller only re-renders on change.
+    rescueState.renderedStatus = inc.status;
 
     const readingAge = reading ? (Date.now() - new Date(reading.recorded_at).getTime()) / 1000 : null;
     const isLive = readingAge !== null && readingAge <= 15;
@@ -529,6 +695,11 @@ function renderIncidentDetail(inc, timeline, reading, readingNote, loc) {
             ${renderMissionControls(inc)}
         </div>
 
+        <div>
+            <p class="detail-sub">Acknowledge &amp; Send Update to Control Room</p>
+            ${renderResponsePanel(inc, timeline)}
+        </div>
+
         ${locationPanel}
 
         <div>
@@ -562,6 +733,7 @@ function num(v) {
 
 function timelineLabel(type) {
     const labels = {
+        RESCUE_REQUESTED: 'Rescue requested by control room',
         INCIDENT_DETECTED: 'Incident detected',
         INCIDENT_CREATED: 'Incident created',
         DETECTION_UPDATED: 'New sensor reading received',
@@ -591,8 +763,8 @@ function renderAssignment(inc) {
 
     if (terminal || !isRescueControl) {
         return `${current}
-        ${!isAdmin && !terminal && !inc.assigned_team_id
-            ? '<p class="workflow-hint">Waiting for control-room assignment.</p>' : ''}`;
+        ${rescueState.role === 'user' && !terminal && !inc.assigned_team_id
+            ? '<p class="workflow-hint">Waiting for rescue-team assignment.</p>' : ''}`;
     }
 
     return `
@@ -657,7 +829,7 @@ function renderMissionControls(inc) {
         html += `<p class="workflow-hint">⚠️ Escalated to control room — awaiting reassignment.</p>`;
     }
 
-    if (isAdmin && !['RESOLVED', 'CANCELLED'].includes(inc.status)) {
+    if (isRescueControl && !['RESOLVED', 'CANCELLED'].includes(inc.status)) {
         html += `
             <div class="mission-controls" style="margin-top:10px;">
                 <button class="btn-danger" onclick="rescueControlAction('${esc(inc.incident_id)}', 'escalate')">
@@ -671,7 +843,7 @@ function renderMissionControls(inc) {
                     FORCE RESOLVE
                 </button>` : ''}
             </div>
-            <p class="workflow-hint">Admin actions are recorded on the incident timeline.</p>`;
+            <p class="workflow-hint">Rescue-control actions are recorded on the incident timeline.</p>`;
     }
 
     return html;
@@ -689,6 +861,181 @@ async function missionAction(incidentId, endpoint) {
     }
 }
 window.missionAction = missionAction;
+
+// ─── ACKNOWLEDGE + SEND UPDATE TO CONTROL ROOM ───────────
+//
+// Every response below is a REAL mission action (the same endpoints the
+// Mission Control buttons use). Each is recorded on the incident timeline
+// with its timestamp, actor and optional custom note. Presets that are
+// not a legal transition from the current status are shown disabled —
+// the backend transition map stays the single authority.
+
+function renderResponsePanel(inc, timeline) {
+    const events = timeline || [];
+    const terminal = ['RESOLVED', 'CANCELLED'].includes(inc.status);
+    const isTeamUser = rescueState.role === 'rescue_team';
+    const myTeam = rescueState.teamId && inc.assigned_team_id === rescueState.teamId;
+
+    const msgHtml = rescueState.lastResponseMsg
+        ? `<p class="response-msg ${rescueState.lastResponseMsg.ok ? 'ok' : 'err'}">${
+            esc(rescueState.lastResponseMsg.text)
+        }</p>`
+        : '';
+
+    if (!isTeamUser) {
+        return `
+            <p class="workflow-hint">Responses are recorded by the rescue team from the Rescue Portal.</p>
+            ${msgHtml}`;
+    }
+
+    // ── Acknowledge row ──
+    let ackHtml = '';
+    if (terminal) {
+        ackHtml = '<p class="workflow-hint">Incident closed — no further acknowledgement possible.</p>';
+    } else if (['ACCEPTED', 'EN_ROUTE', 'ON_SCENE', 'RESCUE_IN_PROGRESS', 'PERSON_SAFE'].includes(inc.status)) {
+        const accepted = [...events]
+            .reverse()
+            .find(e => e.event_type === 'MISSION_ACCEPTED');
+        ackHtml = `
+            <div class="ack-row">
+                <span class="badge badge-safe">✓ Alert acknowledged</span>
+                ${accepted ? `<span class="workflow-hint">Recorded ${fmtTime(accepted.timestamp)} by ${esc(accepted.performed_by || '—')}</span>` : ''}
+            </div>`;
+    } else {
+        const unassigned = !inc.assigned_team_id;
+        const otherTeam = unassigned || !myTeam;
+        const canClaim = unassigned && rescueState.teamId;
+        const label = canClaim ? 'CLAIM & ACKNOWLEDGE ALERT' : 'ACKNOWLEDGE ALERT';
+        const hint = unassigned && !rescueState.teamId
+            ? 'Your account has no team assigned — acknowledgement needs a rescue-team profile.'
+            : otherTeam && !unassigned
+                ? `Assigned to ${inc.assigned_team_id} — only that team can acknowledge.`
+                : canClaim
+                    ? 'This incident is unassigned — acknowledging will claim it for your team and record the acknowledgement on the timeline.'
+                    : '';
+        ackHtml = `
+            <div class="ack-row">
+                <button class="btn-mission" ${otherTeam && !canClaim ? 'disabled' : ''}
+                    onclick="acknowledgeAlert('${esc(inc.incident_id)}')">
+                    ${label}
+                </button>
+            </div>
+            ${hint ? `<p class="workflow-hint">${esc(hint)}</p>` : ''}`;
+    }
+
+    // ── Preset response rows ──
+    const transitions = RESCUE_TRANSITIONS[inc.status] || [];
+    const mayAct = isTeamUser && (!inc.assigned_team_id || myTeam) && !terminal;
+
+    const presets = RESPONSE_PRESETS.map(p => {
+        const legal = transitions.includes(p.action);
+        const blocked = !legal
+            ? `Not available while status is ${String(inc.status || '').replace(/_/g, ' ').toLowerCase()}.`
+            : !mayAct
+                ? (!inc.assigned_team_id
+                    ? 'Claim the mission first.'
+                    : `Assigned to ${inc.assigned_team_id}.`)
+                : '';
+        return `
+            <button type="button" class="response-preset"
+                ${blocked ? 'disabled' : ''}
+                title="${esc(blocked)}"
+                onclick="sendResponseUpdate('${esc(inc.incident_id)}', '${esc(p.endpoint)}', '${esc(p.label)}')">
+                ${esc(p.label)}
+            </button>`;
+    }).join('');
+
+    const noteInput = `
+        <div class="response-note-row">
+            <input type="text" id="response-note-${esc(inc.incident_id)}"
+                maxlength="200"
+                placeholder="Optional detail for the control room (e.g. 2 responders, need stretcher)"
+                ${mayAct ? '' : 'disabled'}>
+        </div>`;
+
+    return `
+        <div class="response-panel">
+            <h4>Send update to control room</h4>
+            <p class="workflow-hint">
+                Each update below is a real mission action recorded on this incident's
+                timeline — the control room sees it on the SOS alert without refreshing.
+                Sending an update never resolves the incident by itself; resolution is a
+                separate, explicit step.
+            </p>
+            ${ackHtml}
+            <div class="response-presets">${presets}</div>
+            ${noteInput}
+            ${msgHtml}
+        </div>`;
+}
+
+async function acknowledgeAlert(incidentId) {
+    const inc = rescueState.incidents.find(i => i.incident_id === incidentId);
+    if (!inc) return;
+
+    const noteEl = document.getElementById(`response-note-${incidentId}`);
+    const note = (noteEl?.value || '').trim();
+
+    try {
+        // Unassigned incident: claiming (assign to own team) is the first
+        // real step — the backend records TEAM_ASSIGNED, then ACCEPT.
+        if (!inc.assigned_team_id && rescueState.teamId) {
+            await rescueFetch(`/incidents/${encodeURIComponent(incidentId)}/assign`, {
+                method: 'POST',
+                body: JSON.stringify({ team_id: rescueState.teamId }),
+            });
+        }
+
+        await rescueFetch(`/incidents/${encodeURIComponent(incidentId)}/accept`, {
+            method: 'POST',
+            body: JSON.stringify({ notes: note || 'Alert received — acknowledged by rescue team.' }),
+        });
+
+        rescueState.lastResponseMsg = {
+            ok: true,
+            text: '✓ Alert acknowledged — recorded on the incident timeline. The incident is NOT resolved; continue the mission steps below.',
+        };
+    } catch (err) {
+        rescueState.lastResponseMsg = { ok: false, text: `Acknowledgement failed: ${err.message}` };
+    }
+
+    await openIncident(incidentId);
+    loadRescueInbox();
+}
+window.acknowledgeAlert = acknowledgeAlert;
+
+async function sendResponseUpdate(incidentId, endpoint, presetLabel) {
+    const noteEl = document.getElementById(`response-note-${incidentId}`);
+    const note = (noteEl?.value || '').trim();
+
+    const body = {
+        notes: note ? `${presetLabel} — ${note}` : presetLabel,
+    };
+
+    try {
+        await rescueFetch(`/incidents/${encodeURIComponent(incidentId)}/${endpoint}`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+        });
+
+        rescueState.lastResponseMsg = {
+            ok: true,
+            text: `✓ Update recorded: “${presetLabel}”${note ? ` (${note})` : ''}.`,
+        };
+    } catch (err) {
+        const extra = err.body && err.body.code === 'EQUIPMENT_CHECK_REQUIRED'
+            ? ' — complete the pre-departure Equipment Checklist first.'
+            : '';
+        rescueState.lastResponseMsg = {
+            ok: false,
+            text: `Update failed: ${err.message}${extra}`,
+        };
+    }
+
+    await openIncident(incidentId);
+    loadRescueInbox();
+}
+window.sendResponseUpdate = sendResponseUpdate;
 
 async function rescueControlAction(incidentId, endpoint) {
     const confirmMsg = {

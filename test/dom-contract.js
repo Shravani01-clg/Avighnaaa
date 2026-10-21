@@ -20,6 +20,7 @@ const sources = [
   "frontend/rescue-equipment.js",
   "frontend/rescue.js",
   "frontend/script.js",
+  "frontend/sos-coordination.js",
 ];
 
 let failures = 0;
@@ -29,10 +30,12 @@ for (const rel of sources) {
   const code = fs.readFileSync(path.join(__dirname, "..", rel), "utf8");
   const ids = new Set();
 
-  // Both direct calls and the local `$()` alias used by dashboard-rescue.js.
+  // Direct calls plus the local aliases: `$()` (dashboard-rescue.js)
+  // and `$sos()` (sos-coordination.js).
   const patterns = [
     /getElementById\(\s*['"`]([^'"`]+)['"`]\s*\)/g,
     /(?<![A-Za-z0-9_$.])\$\(\s*['"`]([^'"`]+)['"`]\s*\)/g,
+    /(?<![A-Za-z0-9_$])\$sos\(\s*['"`]([^'"`]+)['"`]\s*\)/g,
   ];
 
   for (const re of patterns) {
@@ -76,11 +79,18 @@ for (const frag of required) {
 }
 
 // Script load order matters: script.js defines the globals the others use.
-const order = ["script.js", "dashboard-rescue.js", "rescue.js"].map((f) =>
+const order = ["script.js", "dashboard-rescue.js", "rescue.js", "sos-coordination.js"].map((f) =>
   html.indexOf(`src="${f}"`)
 );
-if (order.every((i) => i >= 0) && order[0] < order[1] && order[1] < order[2]) {
-  console.log("   ✅ script load order is script.js → dashboard-rescue.js → rescue.js");
+if (
+  order.every((i) => i >= 0) &&
+  order[0] < order[1] &&
+  order[1] < order[2] &&
+  order[2] < order[3]
+) {
+  console.log(
+    "   ✅ script load order is script.js → dashboard-rescue.js → rescue.js → sos-coordination.js"
+  );
 } else {
   failures += 1;
   console.log(`   ❌ bad script load order: ${JSON.stringify(order)}`);

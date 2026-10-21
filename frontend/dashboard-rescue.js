@@ -37,6 +37,11 @@
 
   let currentIncident = null;
   let refreshTimer = null;
+  // Guards against a second ping while the first one is still in flight.
+  // The button is also disabled, but the 10s poll re-renders the panel and
+  // would otherwise re-enable it mid-request (a second click would then
+  // reach the backend).
+  let pingInFlight = false;
 
   const $ = (id) => document.getElementById(id);
 
@@ -104,6 +109,10 @@
     if (isDone) {
       reqBtn.disabled = true;
       reqBtn.textContent = "🚒 RESCUE COMPLETED";
+    } else if (pingInFlight) {
+      // A ping is on the wire — never re-enable the button underneath it.
+      reqBtn.disabled = true;
+      reqBtn.textContent = "🚒 PINGING RESCUE TEAM…";
     } else if (incident.rescue_requested) {
       reqBtn.disabled = true;
       reqBtn.textContent = "🚒 RESCUE REQUESTED";
@@ -166,15 +175,26 @@
       return;
     }
 
-    const headers = await authHeaders();
-    if (!headers) return;
+    if (pingInFlight) return; // duplicate click — one request only
 
+    const headers = await authHeaders();
+    if (!headers) {
+      if (msg) msg.textContent = "Not signed in — sign in to request rescue.";
+      return;
+    }
+
+    // Snapshot the incident this ping belongs to, so a poll that swaps
+    // currentIncident mid-flight cannot mislabel the result.
+    const target = currentIncident;
+
+    pingInFlight = true;
     btn.disabled = true;
+    btn.textContent = "🚒 PINGING RESCUE TEAM…";
     if (msg) msg.textContent = "Requesting rescue team…";
 
     try {
       const res = await fetch(
-        `${API_BASE_URL}/incidents/${encodeURIComponent(currentIncident.incident_id)}/request-rescue`,
+        `${API_BASE_URL}/incidents/${encodeURIComponent(target.incident_id)}/request-rescue`,
         {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
@@ -184,22 +204,36 @@
       const body = await res.json();
 
       if (!res.ok) {
-        if (msg) msg.textContent = body.message || "Could not request rescue.";
-        btn.disabled = false;
+        if (msg) msg.textContent = `Ping failed: ${body.message || res.status}`;
+        pingInFlight = false;
+        await refresh();
         return;
       }
 
+      // The backend response is the source of truth for what was pinged.
+      const data = body.data || {};
+      const where = data.location || target.location;
+      const who = data.assigned_team_id
+        ? data.assigned_team_name
+          ? `${data.assigned_team_id} (${data.assigned_team_name})`
+          : data.assigned_team_id
+        : "no team assigned yet";
+
       if (msg) {
         msg.textContent = body.already_requested
-          ? "Rescue was already requested for this incident."
-          : "🚨 Rescue team notified — the incident is now in their portal.";
+          ? `Rescue was already requested for ${target.incident_id} (${where}) — ${who}.`
+          : `🚨 Rescue team pinged for ${target.incident_id} — ${where} · ${who}. The Rescue Portal now lists this alert.`;
       }
-      addLogEntry("STATUS", "tag-status", `Rescue requested for ${currentIncident.incident_id}`);
-      await refresh();
+      addLogEntry("STATUS", "tag-status", `Rescue requested for ${target.incident_id}`);
     } catch (err) {
-      if (msg) msg.textContent = `Request failed: ${err.message}`;
-      btn.disabled = false;
+      if (msg) msg.textContent = `Ping failed: ${err.message}`;
+      pingInFlight = false;
+      await refresh();
+      return;
     }
+
+    pingInFlight = false;
+    await refresh();
   }
 
   function viewIncident() {
@@ -209,8 +243,18 @@
       const link = document.querySelector(`[data-target="${target}"]`);
       if (link) link.click();
     }
-    // For plain users there is no incident-detail page, so expand the
-    // existing alerts view filtered to this device instead of faking a page.
+    // Control-room users get the SOS detail modal for this incident:
+    // overview, per-alert AI recommendation, ping action and the
+    // recorded communication timeline (sos-coordination.js).
+    if (window.avighnaaRole === "user") {
+      if (typeof window.openSosDetail === "function") {
+        window.openSosDetail({
+          incidentId: currentIncident.incident_id,
+          deviceId: currentIncident.device_id,
+        });
+      }
+      return;
+    }
     const msg = $("dash-emergency-msg");
     if (msg && window.avighnaaRole === "user") {
       msg.textContent =

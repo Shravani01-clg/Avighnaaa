@@ -15,22 +15,15 @@
  */
 require("dotenv").config();
 
-const ACCOUNTS = [
-  {
-    label: "Rescue team",
-    email: process.env.RESCUE_TEAM_EMAIL || "rescue.team@avighnaa.com",
-    password: process.env.RESCUE_TEAM_PASSWORD || "Rescue@2026",
-    role: "rescue_team",
-    team: process.env.RESCUE_TEAM_ID || "RT-01",
-  },
-  {
-    label: "Control-room user",
-    email: process.env.CONTROL_USER_EMAIL || "controlroom.user@rockfall.com",
-    password: process.env.CONTROL_USER_PASSWORD || "User@2026",
-    role: "user",
-    team: null,
-  },
-];
+const { buildAccounts } = require("./accounts");
+
+// Passwords come from .env only — they are never stored in this repository.
+const ACCOUNTS = buildAccounts();
+
+// An EXISTING account keeps its password unless the operator asks for a
+// reset: rewriting it would silently override the password the operator set
+// in the Supabase dashboard and invalidate every live session.
+const RESET_PASSWORD = process.argv.includes("--reset-password");
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY =
@@ -76,14 +69,19 @@ async function createUser(acc) {
 }
 
 async function updateUser(id, acc) {
+  // Password is only sent when the operator explicitly asked for a reset.
+  const payload = {
+    email_confirm: true,
+    app_metadata: acc.team ? { role: acc.role, team_id: acc.team } : { role: acc.role },
+  };
+  if (RESET_PASSWORD) {
+    payload.password = acc.password;
+  }
+
   const res = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${id}`, {
     method: "PUT",
     headers: adminHeaders(),
-    body: JSON.stringify({
-      password: acc.password,
-      email_confirm: true,
-      app_metadata: acc.team ? { role: acc.role, team_id: acc.team } : { role: acc.role },
-    }),
+    body: JSON.stringify(payload),
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -128,15 +126,27 @@ async function syncProfile(user, acc) {
     const profileOk = await syncProfile(user, acc);
 
     console.log(`\n   ${acc.label}`);
-    console.log(`   ✅ auth user ${found ? "updated" : "created"}`);
+    console.log(`   ${found ? "✅ auth user updated" : "✅ auth user created"}`);
+    if (found && RESET_PASSWORD) {
+      console.log(
+        `   ⚠️  the password of this EXISTING account was RESET to the value below ` +
+          `(and every live session for it was invalidated)`
+      );
+    } else if (found) {
+      console.log(
+        `   ℹ️  the existing password was KEPT (re-run with --reset-password to change it)`
+      );
+    }
     console.log(`   email         ${user.email}`);
-    console.log(`   password      ${acc.password}`);
     console.log(`   role          ${acc.role}${acc.team ? `  (team ${acc.team})` : ""}`);
     console.log(`   profile row   ${profileOk ? "synced" : "skipped (JWT metadata still applies)"}`);
   }
 
   console.log(
-    "\n   The existing admin account (controlroom@rockfall.com) was not modified.\n"
+    `\n   Passwords are read from .env and are never stored in this repository.\n` +
+      (RESET_PASSWORD
+        ? `   (--reset-password was used: existing accounts had their password reset)\n`
+        : `   Add --reset-password if you really want to overwrite an existing password.\n`)
   );
 })().catch((err) => {
   console.error(`\n❌ ${err.message}\n`);
