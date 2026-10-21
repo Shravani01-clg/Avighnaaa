@@ -76,10 +76,24 @@ if (process.env.PORT && String(PORT) !== String(process.env.PORT)) {
   );
 }
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`RockFall backend running on http://localhost:${PORT}`);
 
   // Rescue layer: escalation scheduler (checks every tick for
   // unacknowledged incidents past RESPONSE_TIMEOUT_MINUTES)
   startEscalationScheduler();
+});
+
+server.on("error", (err) => {
+  if (err && err.code === "EADDRINUSE") {
+    console.error(
+      `\n❌ Port ${PORT} is already in use — the API is probably already running.\n` +
+        `   Stop it first:\n` +
+        `   Get-NetTCPConnection -State Listen | ? { $_.LocalPort -eq ${PORT} } | % { Stop-Process -Id $_.OwningProcess -Force }\n` +
+        `   Or use another port:  $env:PORT=5003; node server.js\n`
+    );
+    process.exit(1);
+  }
+  console.error(`Backend failed to start: ${err.message}`);
+  process.exit(1);
 });

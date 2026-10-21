@@ -147,6 +147,16 @@ server.listen(Number.isInteger(PORT) ? PORT : 8080, HOST, () => {
 });
 
 server.on("error", (err) => {
+  if (err && err.code === "EADDRINUSE") {
+    console.error(
+      `\n❌ Port ${PORT} is already in use.\n` +
+        `   Another dev server is already serving this project — just open\n` +
+        `   http://${HOST}:${PORT} in your browser, or stop that process first:\n` +
+        `   Get-NetTCPConnection -State Listen | ? { $_.LocalPort -eq ${PORT} } | % { Stop-Process -Id $_.OwningProcess -Force }\n` +
+        `   To use a different port:  $env:PORT=8081; node scripts/serve-frontend.js\n`
+    );
+    process.exit(1);
+  }
   console.error(`Frontend dev server failed: ${err.message}`);
   process.exit(1);
 });
