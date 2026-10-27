@@ -78,9 +78,10 @@ async function runTests() {
 
     } finally {
 
-        await driver.quit();
+        
 
     }
+    await new Promise(resolve => setTimeout(resolve, 10000));
 }
 
 runTests();
