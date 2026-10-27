@@ -10,6 +10,10 @@
  */
 
 const store = require("../config/dataStore");
+// Cross-login notifications: rescue actions notify the control room
+// (and vice versa). createNotification never throws, so this import
+// can never break the incident workflow.
+const { createNotification } = require("./notificationController");
 
 // ─── incident_events key compatibility ────────────────────────
 //
@@ -366,7 +370,7 @@ const listIncidents = async (req, res) => {
       data = data.filter((i) => !TERMINAL_STATUSES.includes(i.status));
     }
 
-    const enriched = await enrichIncidents(data, await loadTeamsById());
+    const enriched = await enrichFast(data);
 
     res.json({ success: true, count: enriched.length, data: enriched });
   } catch (err) {
@@ -390,11 +394,11 @@ const getIncident = async (req, res) => {
       if (!byId || byId.length === 0) {
         return res.status(404).json({ success: false, message: "Incident not found" });
       }
-      const [one] = await enrichIncidents(byId, await loadTeamsById());
+      const [one] = await enrichFast(byId);
       return res.json({ success: true, data: one });
     }
 
-    const [one] = await enrichIncidents(rows, await loadTeamsById());
+    const [one] = await enrichFast(rows);
     res.json({ success: true, data: one });
   } catch (err) {
     res.status(500).json({ success: false, message: "Server error", error: err.message });
@@ -532,30 +536,26 @@ async function performAction(req, res, action) {
       });
     }
 
-    // rescue_team may only act on incidents assigned to their own team.
-    // EXCEPTION: ASSIGN / REASSIGN are the rescue team claiming a mission.
-    // Under the two-role architecture there is no admin, so the rescue team
-    // itself dispatches itself — blocking these would leave every incident
-    // permanently unassignable.
+    // ── Dispatch model ───────────────────────────────────────
+    // The rescue login is the DISPATCH CONSOLE: it assigns incidents to
+    // the available rescue teams and records mission progress on their
+    // behalf. Progress actions therefore only require that SOME team has
+    // been assigned — the login no longer acts "as" a field team, so
+    // there is no caller-team identity check anymore.
     if (role === "rescue_team") {
-      const teamId = req.profile && req.profile.team_id;
-      const claimActions = ["ASSIGN", "REASSIGN"];
-      if (action !== undefined && !["CANCEL", ...claimActions].includes(action)) {
-        if (!incident.assigned_team_id) {
-          return res.status(409).json({
-            success: false,
-            message: "Incident has no assigned team yet",
-          });
-        }
-        if (teamId && incident.assigned_team_id !== teamId) {
-          return res.status(403).json({
-            success: false,
-            message: "Incident is assigned to a different team",
-            your_team: teamId,
-            assigned_team: incident.assigned_team_id,
-          });
-        }
+      const progressActions = [
+        "ACCEPT", "EN_ROUTE", "ARRIVE", "START_RESCUE", "PERSON_SAFE", "RESOLVE",
+      ];
+      if (progressActions.includes(action) && !incident.assigned_team_id) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Incident has no assigned team yet — assign one of the available rescue teams first.",
+        });
       }
+      // ASSIGN / REASSIGN / ESCALATE / CANCEL stay available regardless:
+      // dispatching, handing back and closing an unassigned incident are
+      // all legitimate dispatch actions.
       // RESOLVE for rescue_team only from PERSON_SAFE (enforced by transition map)
     }
 
@@ -563,6 +563,9 @@ async function performAction(req, res, action) {
       status: nextStatus,
       updated_at: new Date().toISOString(),
     };
+
+    // Team row captured for the control-room notification below.
+    let assignedTeamRow = null;
 
     if (action === "ASSIGN" || action === "REASSIGN") {
       const teamId = req.body && req.body.team_id;
@@ -573,6 +576,7 @@ async function performAction(req, res, action) {
       if (!teams || teams.length === 0) {
         return res.status(404).json({ success: false, message: "Rescue team not found" });
       }
+      assignedTeamRow = teams[0];
       updates.assigned_team_id = teamId;
       // mark team busy when it receives a mission
       await store.update("rescue_teams", { team_id: teamId }, { status: "BUSY", updated_at: new Date().toISOString() });
@@ -614,6 +618,32 @@ async function performAction(req, res, action) {
           ? `Team ${req.body.team_id} ${action === "REASSIGN" ? "reassigned" : "assigned"}`
           : `Status → ${STATUS_LABELS[nextStatus] || nextStatus}`)
     );
+
+    // ── Notify the control-room (admin) login ─────────────────
+    // Assignment happens on the rescue login — the control room must
+    // see it without watching the rescue portal. The bell on the
+    // dashboard picks this up on its next poll. Best-effort only:
+    // createNotification never throws.
+    if (action === "ASSIGN" || action === "REASSIGN") {
+      const teamLabel = assignedTeamRow
+        ? `${assignedTeamRow.team_id} (${assignedTeamRow.team_name})`
+        : updates.assigned_team_id;
+      await createNotification({
+        incident_id: incident.incident_id,
+        audience: "user",
+        type: action === "REASSIGN" ? "TEAM_REASSIGNED" : "TEAM_ASSIGNED",
+        title:
+          action === "REASSIGN"
+            ? `Team reassigned to ${incident.incident_id}`
+            : `Team assigned to ${incident.incident_id}`,
+        message:
+          `${teamLabel} ${action === "REASSIGN" ? "reassigned" : "assigned"} to the ` +
+          `${incident.severity} ${incident.hazard_type} incident ${incident.incident_id}` +
+          `${incident.location ? ` at ${incident.location}` : ""}. ` +
+          `Status is now ${STATUS_LABELS[nextStatus] || nextStatus}` +
+          `${performedBy ? ` (by ${performedBy})` : ""}.`,
+      });
+    }
 
     res.json({
       success: true,
@@ -973,15 +1003,22 @@ async function getRequestedSet() {
 /**
  * Attach `rescue_requested` (+ request time + team name) to incident rows.
  * Never throws — enrichment must not break the list endpoint.
+ *
+ * `requestedSet` may be passed in pre-fetched so callers can run the two
+ * independent lookups (teams + requested-set) in parallel via enrichFast().
  */
-async function enrichIncidents(incidents, teamsById) {
+async function enrichIncidents(incidents, teamsById, requestedSet) {
   if (!incidents || incidents.length === 0) return incidents || [];
 
   let requested = new Set();
-  try {
-    requested = await getRequestedSet();
-  } catch {
-    /* ignore */
+  if (requestedSet) {
+    requested = requestedSet;
+  } else {
+    try {
+      requested = await getRequestedSet();
+    } catch {
+      /* ignore */
+    }
   }
 
   // Map incidents.id (uuid) -> incident_id so uuid-keyed events resolve.
@@ -1023,6 +1060,21 @@ async function loadTeamsById() {
 }
 
 /**
+ * Enrich with teams + requested-set fetched TOGETHER (they are
+ * independent). Serialised, these two lookups added two extra Supabase
+ * round trips back-to-back to every list/detail response — the incident
+ * list is polled by both logins every 10 seconds, so this was a
+ * noticeable slice of the app's perceived loading time.
+ */
+async function enrichFast(data) {
+  const [teamsById, requestedSet] = await Promise.all([
+    loadTeamsById(),
+    getRequestedSet().catch(() => new Set()),
+  ]);
+  return enrichIncidents(data, teamsById, requestedSet);
+}
+
+/**
  * POST /api/incidents/:id/request-rescue
  *
  * The main dashboard's [REQUEST RESCUE TEAM] button.
@@ -1055,7 +1107,7 @@ const requestRescue = async (req, res) => {
       });
     }
 
-    const [enriched] = await enrichIncidents([incident], await loadTeamsById());
+    const [enriched] = await enrichFast([incident]);
     const alreadyRequested = enriched.rescue_requested;
 
     const requestedAt = new Date().toISOString();
@@ -1106,15 +1158,32 @@ const requestRescue = async (req, res) => {
         `Rescue response requested from the control room by ${(req.user && req.user.email) || "unknown"}` +
           (context.length ? ` — ${context.join(" · ")}` : "")
       );
+
+      // ── Notify the rescue login ────────────────────────────
+      // The control room raised the request — the rescue portal's
+      // bell gets the same dispatch context. Best-effort only.
+      const hazardLabel = HAZARD_LABELS[incident.hazard_type] || incident.hazard_type;
+      await createNotification({
+        incident_id: incident.incident_id,
+        audience: "rescue_team",
+        type: "RESCUE_REQUESTED",
+        title: `Rescue requested for ${incident.incident_id}`,
+        message:
+          `${incident.severity} ${hazardLabel}` +
+          `${location ? ` at ${location}` : ""}` +
+          `${incident.device_id ? ` — device ${incident.device_id}` : ""}. ` +
+          (team
+            ? `Assigned team: ${team}.`
+            : "No team assigned yet — open the Rescue Portal to assign one."),
+      });
     }
 
     const fresh = await store.select("incidents", {
       filters: { incident_id: id },
       limit: 1,
     });
-    const [final] = await enrichIncidents(
-      fresh && fresh.length ? fresh : [incident],
-      await loadTeamsById()
+    const [final] = await enrichFast(
+      fresh && fresh.length ? fresh : [incident]
     );
 
     res.json({

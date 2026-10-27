@@ -130,7 +130,7 @@
                             id="rescue-login-btn"
                             data-login-role="rescue_team"
                         >
-                            🚒 RESCUE TEAM
+                            🚒 RESCUE DISPATCH
                         </button>
                     </div>
                     <p class="login-alt-note" id="login-role-note">
@@ -366,6 +366,49 @@
 
 
                 <div class="header-right">
+
+                    <!-- Cross-login notifications (fed by notifications.js) -->
+                    <div class="notif-wrap hidden" id="notif-wrap">
+
+                        <button
+                            type="button"
+                            class="notif-bell"
+                            id="notif-bell"
+                            aria-label="Notifications"
+                            title="Notifications"
+                        >
+                            <i data-lucide="bell"></i>
+                            <span
+                                class="notif-badge hidden"
+                                id="notif-badge"
+                            >
+                                0
+                            </span>
+                        </button>
+
+                        <div
+                            class="notif-panel hidden"
+                            id="notif-panel"
+                        >
+                            <div class="notif-head">
+                                <span>Notifications</span>
+                                <button
+                                    type="button"
+                                    class="notif-markall"
+                                    id="notif-mark-all"
+                                >
+                                    Mark all read
+                                </button>
+                            </div>
+                            <div
+                                class="notif-list"
+                                id="notif-list"
+                            >
+                                <p class="notif-empty">No notifications yet.</p>
+                            </div>
+                        </div>
+
+                    </div>
 
                     <div class="zone-info">
                         <i data-lucide="map-pin"></i>
@@ -1676,7 +1719,7 @@
 
             <!-- =================================================
                  PAGE: RESCUE PORTAL
-                 Role-gated: rescue_team, admin
+                 Role-gated: rescue_team (dispatch console)
             ================================================== -->
             <div
                 id="page-rescue"
@@ -1686,10 +1729,12 @@
                 <div class="rescue-banner">
                     <span class="rescue-banner-title">
                         <i data-lucide="siren"></i>
-                        RESCUE TEAM PORTAL
+                        RESCUE DISPATCH CONSOLE
                     </span>
                     <span class="rescue-banner-note">
-                        Academic prototype &mdash; DEMO / SIMULATED dispatch. Not connected to real emergency services.
+                        Assign each incident to one of the available rescue teams and track
+                        their progress. Academic prototype &mdash; DEMO / SIMULATED dispatch,
+                        not connected to real emergency services.
                     </span>
                     <span class="rescue-banner-team hidden" id="rescue-my-team">
                         --
@@ -1714,7 +1759,7 @@
                     </div>
 
                     <div class="summary-card">
-                        <div class="card-label">My Missions</div>
+                        <div class="card-label">Assigned Incidents</div>
                         <div class="card-value" id="rc-mine-count">0</div>
                     </div>
 
@@ -1798,7 +1843,7 @@
 
                     <section class="section">
                         <div class="section-header">
-                            <h3>Rescue Teams</h3>
+                            <h3>Teams Available for Dispatch</h3>
                         </div>
                         <div id="rescue-teams-list" class="rescue-table-wrap">
                             <p class="rescue-empty">Loading teams...</p>
@@ -1931,8 +1976,8 @@
                         RESCUE EQUIPMENT
                     </span>
                     <span class="rescue-banner-note">
-                        Readiness for the rescue team only. Items under maintenance, damaged or
-                        unavailable are never counted as ready.
+                        Readiness across all rescue teams' equipment. Items under maintenance,
+                        damaged or unavailable are never counted as ready.
                     </span>
                 </div>
 
@@ -2481,6 +2526,7 @@
     <script src="rescue-equipment.js"></script>
     <script src="rescue.js"></script>
     <script src="sos-coordination.js"></script>
+    <script src="notifications.js"></script>
 
 </body>
 </html>

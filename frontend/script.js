@@ -2478,8 +2478,8 @@ const LOGIN_INTENT_COPY = {
         sub: 'Sign in to access the control-room dashboard and request rescue when an emergency is detected.',
     },
     rescue_team: {
-        title: 'Rescue Team Access',
-        sub: 'Sign in with your rescue-team account. Role is verified on the server.',
+        title: 'Rescue Dispatch Access',
+        sub: 'Sign in with the rescue-dispatch account. You assign incidents to the available rescue teams. Role is verified on the server.',
     },
 };
 
@@ -2510,7 +2510,7 @@ function setupLoginRoleButtons() {
             if (note) {
                 note.textContent =
                     intent === 'rescue_team'
-                        ? 'Emergency response portal — role verified on the server.'
+                        ? 'Rescue dispatch console — assigns incidents to the available teams. Role verified on the server.'
                         : 'You will only reach the portal matching your account role.';
             }
         });

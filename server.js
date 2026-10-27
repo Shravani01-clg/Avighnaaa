@@ -7,6 +7,7 @@ const authRoutes = require("./routes/authRoutes");
 const incidentRoutes = require("./routes/incidentRoutes");
 const rescueRoutes = require("./routes/rescueRoutes");
 const equipmentRoutes = require("./routes/equipmentRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
 const express = require("express");
 const cors = require("cors");
 const supabase = require("./config/supabase");
@@ -37,6 +38,14 @@ app.use("/api", riskRoutes);
 app.use("/api", authRoutes);
 app.use("/api", incidentRoutes);
 app.use("/api", rescueRoutes);
+
+// Cross-login notifications (assign/reassign + rescue request).
+// MUST be mounted before equipmentRoutes: that router starts with a
+// path-less `router.use(requireRole("rescue_team"))`, which would
+// otherwise reject the control-room login on /api/notifications/*
+// before these routes are ever reached.
+app.use("/api", notificationRoutes);
+
 app.use("/api", equipmentRoutes);
 // Temporary Supabase connection test
 app.get("/test-supabase", async (req, res) => {

@@ -56,7 +56,7 @@ A mine-safety monitoring and rescue-coordination system in three layers, all wir
 ### 3.4 Schema & supporting code
 - 7 migrations: `001_rescue_layer.sql`, `002_rescue_seed.sql`, `003_dedicated_rescue_user.sql`, `004_fix_incident_events_schema.sql`, `005_rescue_requested.sql`, `006_two_roles_and_equipment.sql`, `007_risk_predictions_ai_column.sql`.
 - AI/risk: `ai-module/`, `risk-module/`, `controllers/riskController.js` reading the `risk_predictions.ai` column; AI analysis is **stored on the incident** and rendered in the SOS modal.
-- Also present: `simulator/` (sensor/SOS data generator), `scripts/create-accounts.js`, `set-rescue-password.js`, `test/` (4 suites), `screenshots/` (6 verification captures).
+- Also present: `scripts/create-accounts.js`, `set-rescue-password.js`, `test/` (suites), `screenshots/` (6 verification captures). No data simulator: the project ingests only real device data — the former `simulator/` generator and the standalone prototype HTML were removed, and `scripts/purge-device-data.js` can purge any device's telemetry.
 
 ---
 

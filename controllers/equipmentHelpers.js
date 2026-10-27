@@ -8,8 +8,8 @@
  *     migrations/006_two_roles_and_equipment.sql. Until that file is run in
  *     the Supabase SQL Editor the tables do not exist, so equipment calls
  *     fall back to memory. The fallback is ALWAYS reported in the API
- *     response as storage:"memory" so demo data is never passed off as
- *     persisted database rows.
+ *     response as storage:"memory", and memory mode starts EMPTY — no demo
+ *     inventory is ever fabricated to fill the pages.
  */
 
 const store = require("../config/dataStore");
@@ -21,44 +21,11 @@ const MEMORY_TABLES = {
   equipment_events: [],
 };
 
-// Starter inventory used ONLY when the equipment tables do not exist yet
-// (i.e. migrations/006 has not been run). It is returned with
-// storage:"memory" so it is never mistaken for persisted data.
-(function seedMemoryInventory() {
-  const d = (offset) => {
-    const t = new Date();
-    t.setDate(t.getDate() + offset);
-    return t.toISOString().slice(0, 10);
-  };
-  const items = [
-    ["FE-01", "Fire Extinguisher", "PROTECTION", 4, "AVAILABLE", "GOOD", "Station Bay 1", -30, 60],
-    ["GM-01", "Gas Mask", "PROTECTION", 3, "AVAILABLE", "GOOD", "Station Bay 1", -25, 35],
-    ["GM-02", "Gas Mask (spare)", "PROTECTION", 1, "MAINTENANCE", "FAIR", "Workshop", -90, 5],
-    ["FA-01", "First Aid Kit", "MEDICAL", 3, "AVAILABLE", "GOOD", "Clinic", -20, 70],
-    ["FA-02", "Stretcher", "MEDICAL", 1, "AVAILABLE", "GOOD", "Clinic", -45, 45],
-    ["RR-01", "Rescue Rope (30m)", "RESCUE", 2, "AVAILABLE", "GOOD", "Equipment Bay", -15, 75],
-    ["ER-01", "Emergency Radio", "COMMS", 4, "AVAILABLE", "GOOD", "Control Room", -10, 80],
-    ["FL-01", "Flashlight (high lumen)", "LIGHTING", 6, "AVAILABLE", "GOOD", "Equipment Bay", -60, 30],
-    ["HS-01", "Safety Helmet", "PROTECTION", 6, "AVAILABLE", "GOOD", "Equipment Bay", -50, 40],
-    ["LS-01", "Life Jacket", "WATER", 3, "IN_USE", "GOOD", "Pump House", -35, 55],
-    ["WT-01", "Water Rescue Paddle", "WATER", 2, "AVAILABLE", "GOOD", "Pump House", -28, 62],
-    ["MS-01", "Multi-gas Monitor", "COMMS", 1, "DAMAGED", "POOR", "Workshop", -120, -10],
-  ];
-  MEMORY_TABLES.rescue_equipment = items.map((r, i) => ({
-    id: `mem-eq-${i + 1}`,
-    equipment_id: r[0],
-    equipment_name: r[1],
-    equipment_type: r[2],
-    quantity: r[3],
-    status: r[4],
-    condition: r[5],
-    location: r[6],
-    last_inspection_date: d(r[7]),
-    next_inspection_date: d(r[8]),
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  }));
-})();
+// NOTE: nothing is ever pre-seeded here. Until migration 006 is run the
+// memory tables stay EMPTY — the API reports storage:"memory" and the
+// equipment pages show "no records yet" rather than fabricated demo items.
+// Inventory rows only ever come from the database (or rows the rescue
+// team itself enters during a memory-mode session).
 
 let warned = false;
 
@@ -83,8 +50,9 @@ async function tableExists(table) {
         console.warn(
           `\n⚠️  Equipment tables are not in the database yet.\n` +
             `   Running migrations/006_two_roles_and_equipment.sql in the Supabase SQL Editor\n` +
-            `   creates them. Until then equipment data is held in MEMORY and is lost on\n` +
-            `   restart (API responses report storage:"memory").\n`
+            `   creates them. Until then the equipment API runs from MEMORY with NO seeded\n` +
+            `   inventory (responses report storage:"memory") — enter real items in the UI or\n` +
+            `   run the migration.\n`
         );
       }
       return false;

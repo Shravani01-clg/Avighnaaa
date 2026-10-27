@@ -80,8 +80,10 @@
     if (note) {
       if (storageMode === "memory") {
         note.textContent =
-          "DEMO MODE — equipment is held in server memory because migration 006 has not been run " +
-          "in the Supabase SQL Editor. This data is lost on restart and is NOT saved to the database.";
+          "MEMORY STORAGE — migration 006 has not been run in the Supabase SQL Editor, so " +
+          "equipment records are held in server memory and lost on restart. Nothing is " +
+          "pre-seeded: this list only ever shows items entered here. Run " +
+          "migrations/006_two_roles_and_equipment.sql to store equipment in the database.";
         note.classList.remove("hidden");
       } else {
         note.classList.add("hidden");
@@ -93,13 +95,16 @@
       return;
     }
 
+    // Colour accents use the summary-card outline family (top border),
+    // exactly like the dashboard tiles — badge classes are for chips and
+    // looked wrong stretched over a whole card.
     const cards = [
       { label: "Total Equipment", value: summary.total, cls: "" },
-      { label: "Available", value: summary.available, cls: "badge-safe" },
-      { label: "In Use", value: summary.in_use, cls: "badge-warning" },
-      { label: "Maintenance", value: summary.maintenance, cls: "badge-critical" },
-      { label: "Damaged", value: summary.damaged, cls: "badge-critical" },
-      { label: "Unavailable", value: summary.unavailable, cls: "badge-info" },
+      { label: "Available", value: summary.available, cls: "outline-safe" },
+      { label: "In Use", value: summary.in_use, cls: "outline-warning" },
+      { label: "Maintenance", value: summary.maintenance, cls: "outline-critical" },
+      { label: "Damaged", value: summary.damaged, cls: "outline-critical" },
+      { label: "Unavailable", value: summary.unavailable, cls: "" },
     ];
 
     el.innerHTML =
@@ -113,7 +118,7 @@
         )
         .join("") +
       `
-        <div class="summary-card ${summary.ready_percent >= 80 ? "badge-safe" : "badge-warning"}">
+        <div class="summary-card ${summary.ready_percent >= 80 ? "outline-safe" : "outline-warning"}">
           <div class="card-label">Equipment Ready</div>
           <div class="card-value">${esc(summary.ready_percent)}%</div>
           <div class="card-subtext">${esc(summary.available)} of ${esc(summary.total)} items available</div>

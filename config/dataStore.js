@@ -38,6 +38,10 @@ const memoryStore = {
   incident_events: [],
   device_commands: [],
 
+  // ── Notifications (both logins) ──────────────────────────
+  // audience: 'user' (control room / admin) | 'rescue_team'
+  notifications: [],
+
   // ── Rescue equipment (RESCUE_TEAM only) ─────────────────────
   rescue_equipment: [],
   equipment_checklists: [],

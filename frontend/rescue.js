@@ -209,7 +209,7 @@ function goToPage(target) {
     const page = document.getElementById(`page-${target}`);
     if (page) page.classList.add('active');
     const titles = {
-        rescue: 'Rescue Team Portal',
+        rescue: 'Rescue Dispatch Console',
         history: 'Rescue History & Analytics',
         rescuecontrol: 'Admin Rescue Control',
         dashboard: 'Dashboard',
@@ -233,8 +233,11 @@ function applyRescueSession(session) {
 
     const teamChip = document.getElementById('rescue-my-team');
     if (teamChip) {
-        if (rescueState.teamId) {
-            teamChip.textContent = `YOUR TEAM: ${rescueState.teamId}`;
+        if (rescueState.role === 'rescue_team') {
+            // The rescue login is the DISPATCH CONSOLE — it assigns
+            // incidents to the available teams. It is not a field team
+            // itself, so there is no "your team" identity anymore.
+            teamChip.textContent = 'RESCUE DISPATCH';
             teamChip.classList.remove('hidden');
         } else {
             teamChip.classList.add('hidden');
@@ -287,10 +290,11 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.addEventListener('click', () => {
             const title = document.querySelector('.login-title');
             const sub = document.querySelector('.login-sub');
-            if (title) title.textContent = 'Rescue Team Access';
+            if (title) title.textContent = 'Rescue Dispatch Access';
             if (sub) {
                 sub.innerHTML =
-                    'Sign in with your rescue-team account. Role is verified on the server.';
+                    'Sign in with the rescue-dispatch account. Role is verified on the server. ' +
+                    'The console assigns incidents to the available rescue teams.';
             }
             document.getElementById('login-user')?.focus();
         });
@@ -407,14 +411,13 @@ async function loadRescueInbox() {
     const active = all.filter(i => ACTIVE_STATUSES.includes(i.status));
     const crit = active.filter(i => i.severity === 'CRITICAL').length;
     const high = active.filter(i => i.severity === 'HIGH').length;
-    const mine = active.filter(
-        i => rescueState.teamId && i.assigned_team_id === rescueState.teamId
-    ).length;
+    // Dispatch view: how many incidents currently sit with a team.
+    const assigned = active.filter(i => i.assigned_team_id).length;
 
     setText('rc-crit-count', crit);
     setText('rc-high-count', high);
     setText('rc-active-count', active.length);
-    setText('rc-mine-count', mine);
+    setText('rc-mine-count', assigned);
 
     const badge = document.getElementById('sidebar-incident-badge');
     if (badge) {
@@ -423,6 +426,10 @@ async function loadRescueInbox() {
     }
 
     updateInboxCounts(active);
+
+    // Fresh incident data → the teams availability panel (which shows
+    // each team's active missions) re-renders against it.
+    renderTeamsTable();
 
     if (!list) return;
 
@@ -457,8 +464,6 @@ async function loadRescueInbox() {
     list.innerHTML = sorted.map(inc => {
         const sel = inc.incident_id === rescueState.selectedId ? ' selected' : '';
         const overdue = isOverdue(inc);
-        const otherTeam = inc.assigned_team_id && rescueState.teamId &&
-            inc.assigned_team_id !== rescueState.teamId;
         const closed = ['RESOLVED', 'CANCELLED'].includes(inc.status);
         return `
         <div class="inc-card ${severityClass(inc.severity)}${sel}"
@@ -475,12 +480,11 @@ async function loadRescueInbox() {
                 ${inc.person_detected ? '<span class="inc-person">👤 Person Detected</span>' : ''}
                 <span>Detected: ${fmtTime(inc.created_at)}</span>
                 <span data-time-ago="${esc(inc.created_at)}">${timeAgo(inc.created_at)}</span>
-                <span>${inc.assigned_team_id ? `🚗 ${esc(inc.assigned_team_id)}` : 'Unassigned'}</span>
+                <span>${inc.assigned_team_id ? `🚒 ${esc(inc.assigned_team_id)}` : 'Unassigned'}</span>
             </div>
             <div class="inc-meta" style="margin-top:6px;">
                 ${statusBadge(inc.status)}
                 ${inc.rescue_requested ? '<span class="req-chip">🔔 RESCUE REQUESTED</span>' : ''}
-                ${otherTeam ? `<span class="other-team-chip">Assigned to ${esc(inc.assigned_team_id)}</span>` : ''}
                 ${closed ? '<span class="badge badge-info">Closed</span>' : ''}
             </div>
             ${overdue ? `
@@ -557,32 +561,42 @@ async function openIncident(incidentId) {
     body.innerHTML = '<p class="rescue-empty">Loading incident...</p>';
 
     try {
-        const [incRes, tlRes] = await Promise.all([
-            rescueFetch(`/incidents/${encodeURIComponent(incidentId)}`),
-            rescueFetch(`/incidents/${encodeURIComponent(incidentId)}/timeline`),
+        // Everything this view needs is independent of everything else, so
+        // it is ALL fired at once. The device id is usually already known
+        // from the inbox list, which lets the sensor + location lookups
+        // start alongside the incident fetch itself instead of waiting for
+        // it — previously each of these phases ran one after the other and
+        // the panel sat on "Loading incident..." for the sum of four
+        // network round trips.
+        const listed = rescueState.incidents.find(i => i.incident_id === incidentId);
+        const knownDevice = listed && listed.device_id ? listed.device_id : null;
+        const devicePromise = knownDevice
+            ? Promise.resolve(knownDevice)
+            : rescueFetch(`/incidents/${encodeURIComponent(incidentId)}`)
+                  .then(r => (r.data && r.data.device_id) || null)
+                  .catch(() => null);
+
+        const incP = rescueFetch(`/incidents/${encodeURIComponent(incidentId)}`);
+        const tlP = rescueFetch(`/incidents/${encodeURIComponent(incidentId)}/timeline`);
+        const teamsP = (rescueState.teams && rescueState.teams.length > 0)
+            ? Promise.resolve(null)
+            : loadTeams(); // never throws — assign options must never be empty
+        const readingP = devicePromise.then(d => d
+            ? rescueFetch(`/devices/${encodeURIComponent(d)}/latest-reading`).catch(() => null)
+            : null);
+        const locP = devicePromise.then(d => d
+            ? rescueFetch(`/device-locations/${encodeURIComponent(d)}`).catch(() => null)
+            : null);
+
+        const [incRes, tlRes, readingR, locR] = await Promise.all([
+            incP, tlP, teamsP, readingP, locP,
         ]);
+
         const inc = incRes.data;
         const timeline = tlRes.data || [];
-
-        // Latest sensor reading (real data only)
-        let reading = null;
-        let readingNote = '';
-        try {
-            const r = await rescueFetch(
-                `/devices/${encodeURIComponent(inc.device_id)}/latest-reading`
-            );
-            reading = r.data;
-            readingNote = r.note || '';
-        } catch { /* device may have no readings yet */ }
-
-        // Configured location (may be null)
-        let loc = null;
-        try {
-            const r = await rescueFetch(
-                `/device-locations/${encodeURIComponent(inc.device_id)}`
-            );
-            loc = r.data;
-        } catch { /* not configured */ }
+        const reading = readingR ? readingR.data : null;
+        const readingNote = readingR && readingR.note ? readingR.note : '';
+        const loc = locR ? locR.data : null;
 
         renderIncidentDetail(inc, timeline, reading, readingNote, loc);
         loadRescueInbox();
@@ -752,23 +766,34 @@ function timelineLabel(type) {
 }
 
 function renderAssignment(inc) {
-    const isRescueControl = rescueState.role === 'rescue_team';
+    const isDispatch = rescueState.role === 'rescue_team';
     const terminal = ['RESOLVED', 'CANCELLED'].includes(inc.status);
-    const teams = rescueState.teams;
 
     const current = inc.assigned_team_id
-        ? `<p class="workflow-hint">Assigned: <strong>${esc(inc.assigned_team_id)}</strong>
-             ${inc.assigned_team_id === rescueState.teamId ? '(your team)' : ''}</p>`
+        ? `<p class="workflow-hint">Currently assigned: <strong>${esc(inc.assigned_team_id)}</strong>${
+              inc.assigned_team_name ? ` (${esc(inc.assigned_team_name)})` : ''
+          }</p>`
         : '<p class="workflow-hint">No team assigned yet.</p>';
 
-    if (terminal || !isRescueControl) {
-        return `${current}
-        ${rescueState.role === 'user' && !terminal && !inc.assigned_team_id
-            ? '<p class="workflow-hint">Waiting for rescue-team assignment.</p>' : ''}`;
+    if (terminal || !isDispatch) {
+        return current;
     }
+
+    // Dispatch panel: every available team, with the free ones first so
+    // the obvious next pick is at the top. The AI-recommended type for
+    // this hazard keeps its tag.
+    const freeRank = t => ((t.status || '').toUpperCase() === 'AVAILABLE' ? 0 : 1);
+    const teams = [...rescueState.teams].sort((a, b) => freeRank(a) - freeRank(b));
 
     return `
         ${current}
+        <p class="workflow-hint">
+            Dispatch — assign this incident to one of the rescue teams below.${
+                inc.assigned_team_id
+                    ? ' Reassignment is recorded on the timeline and the control room is notified.'
+                    : ''
+            }
+        </p>
         <div class="assign-row" style="margin-top:8px;">
             ${teams.map(t => `
                 <div class="team-option">
@@ -800,19 +825,18 @@ window.assignTeam = assignTeam;
 
 function renderMissionControls(inc) {
     const step = MISSION_STEPS[inc.status];
-    const isRescueControl = rescueState.role === 'rescue_team';
-    const myTeam = !rescueState.teamId || inc.assigned_team_id === rescueState.teamId;
-    const isTeamUser = rescueState.role === 'rescue_team';
+    const isDispatch = rescueState.role === 'rescue_team';
+    const hasTeam = !!inc.assigned_team_id;
 
     let html = '';
 
     if (step) {
-        const canAct = !isTeamUser || (inc.assigned_team_id && myTeam);
-        const blockedReason = !inc.assigned_team_id
-            ? 'Requires team assignment first.'
-            : isTeamUser && !myTeam
-                ? `Assigned to ${inc.assigned_team_id} — your team cannot act on this mission.`
-                : '';
+        // Dispatch records progress on behalf of the assigned team — the
+        // backend validates the transition and the equipment gate.
+        const canAct = !isDispatch || hasTeam;
+        const blockedReason = !hasTeam
+            ? 'Assign a rescue team first — dispatch records progress for the assigned team.'
+            : '';
         html += `
             <div class="mission-controls">
                 <button class="btn-mission" ${canAct ? '' : 'disabled'}
@@ -820,16 +844,17 @@ function renderMissionControls(inc) {
                     ${step.label}
                 </button>
             </div>
-            ${blockedReason ? `<p class="workflow-hint">${esc(blockedReason)}</p>` : ''}`;
+            ${blockedReason ? `<p class="workflow-hint">${esc(blockedReason)}</p>` : ''}
+            ${hasTeam ? `<p class="workflow-hint">Recorded on behalf of ${esc(inc.assigned_team_id)}.</p>` : ''}`;
     } else if (inc.status === 'AWAITING_RESPONSE') {
-        html += `<p class="workflow-hint">Awaiting control-room assignment — a mission button appears once a team is assigned.</p>`;
+        html += `<p class="workflow-hint">Awaiting dispatch — assign a team and the mission steps appear here.</p>`;
     } else if (['RESOLVED', 'CANCELLED'].includes(inc.status)) {
         html += `<p class="workflow-hint">Incident closed (${esc(inc.status)}).</p>`;
     } else if (inc.status === 'ESCALATED') {
         html += `<p class="workflow-hint">⚠️ Escalated to control room — awaiting reassignment.</p>`;
     }
 
-    if (isRescueControl && !['RESOLVED', 'CANCELLED'].includes(inc.status)) {
+    if (isDispatch && !['RESOLVED', 'CANCELLED'].includes(inc.status)) {
         html += `
             <div class="mission-controls" style="margin-top:10px;">
                 <button class="btn-danger" onclick="rescueControlAction('${esc(inc.incident_id)}', 'escalate')">
@@ -843,7 +868,7 @@ function renderMissionControls(inc) {
                     FORCE RESOLVE
                 </button>` : ''}
             </div>
-            <p class="workflow-hint">Rescue-control actions are recorded on the incident timeline.</p>`;
+            <p class="workflow-hint">Dispatch actions (escalate / cancel / force-resolve) are recorded on the incident timeline.</p>`;
     }
 
     return html;
@@ -873,8 +898,8 @@ window.missionAction = missionAction;
 function renderResponsePanel(inc, timeline) {
     const events = timeline || [];
     const terminal = ['RESOLVED', 'CANCELLED'].includes(inc.status);
-    const isTeamUser = rescueState.role === 'rescue_team';
-    const myTeam = rescueState.teamId && inc.assigned_team_id === rescueState.teamId;
+    const isDispatch = rescueState.role === 'rescue_team';
+    const hasTeam = !!inc.assigned_team_id;
 
     const msgHtml = rescueState.lastResponseMsg
         ? `<p class="response-msg ${rescueState.lastResponseMsg.ok ? 'ok' : 'err'}">${
@@ -882,9 +907,9 @@ function renderResponsePanel(inc, timeline) {
         }</p>`
         : '';
 
-    if (!isTeamUser) {
+    if (!isDispatch) {
         return `
-            <p class="workflow-hint">Responses are recorded by the rescue team from the Rescue Portal.</p>
+            <p class="workflow-hint">Responses are recorded by the rescue dispatch console.</p>
             ${msgHtml}`;
     }
 
@@ -902,22 +927,17 @@ function renderResponsePanel(inc, timeline) {
                 ${accepted ? `<span class="workflow-hint">Recorded ${fmtTime(accepted.timestamp)} by ${esc(accepted.performed_by || '—')}</span>` : ''}
             </div>`;
     } else {
-        const unassigned = !inc.assigned_team_id;
-        const otherTeam = unassigned || !myTeam;
-        const canClaim = unassigned && rescueState.teamId;
-        const label = canClaim ? 'CLAIM & ACKNOWLEDGE ALERT' : 'ACKNOWLEDGE ALERT';
-        const hint = unassigned && !rescueState.teamId
-            ? 'Your account has no team assigned — acknowledgement needs a rescue-team profile.'
-            : otherTeam && !unassigned
-                ? `Assigned to ${inc.assigned_team_id} — only that team can acknowledge.`
-                : canClaim
-                    ? 'This incident is unassigned — acknowledging will claim it for your team and record the acknowledgement on the timeline.'
-                    : '';
+        // Dispatch acknowledges on behalf of the assigned team; an
+        // unassigned incident is acknowledged by assigning a team (above).
+        const unassigned = !hasTeam;
+        const hint = unassigned
+            ? 'Assign a rescue team first — the assignment is the acknowledgement of this request.'
+            : 'Dispatch acknowledges on behalf of the assigned team — recorded on the timeline.';
         ackHtml = `
             <div class="ack-row">
-                <button class="btn-mission" ${otherTeam && !canClaim ? 'disabled' : ''}
+                <button class="btn-mission" ${unassigned ? 'disabled' : ''}
                     onclick="acknowledgeAlert('${esc(inc.incident_id)}')">
-                    ${label}
+                    ACKNOWLEDGE ALERT
                 </button>
             </div>
             ${hint ? `<p class="workflow-hint">${esc(hint)}</p>` : ''}`;
@@ -925,16 +945,14 @@ function renderResponsePanel(inc, timeline) {
 
     // ── Preset response rows ──
     const transitions = RESCUE_TRANSITIONS[inc.status] || [];
-    const mayAct = isTeamUser && (!inc.assigned_team_id || myTeam) && !terminal;
+    const mayAct = isDispatch && hasTeam && !terminal;
 
     const presets = RESPONSE_PRESETS.map(p => {
         const legal = transitions.includes(p.action);
         const blocked = !legal
             ? `Not available while status is ${String(inc.status || '').replace(/_/g, ' ').toLowerCase()}.`
             : !mayAct
-                ? (!inc.assigned_team_id
-                    ? 'Claim the mission first.'
-                    : `Assigned to ${inc.assigned_team_id}.`)
+                ? 'Assign a rescue team first.'
                 : '';
         return `
             <button type="button" class="response-preset"
@@ -970,25 +988,15 @@ function renderResponsePanel(inc, timeline) {
 }
 
 async function acknowledgeAlert(incidentId) {
-    const inc = rescueState.incidents.find(i => i.incident_id === incidentId);
-    if (!inc) return;
-
     const noteEl = document.getElementById(`response-note-${incidentId}`);
     const note = (noteEl?.value || '').trim();
 
     try {
-        // Unassigned incident: claiming (assign to own team) is the first
-        // real step — the backend records TEAM_ASSIGNED, then ACCEPT.
-        if (!inc.assigned_team_id && rescueState.teamId) {
-            await rescueFetch(`/incidents/${encodeURIComponent(incidentId)}/assign`, {
-                method: 'POST',
-                body: JSON.stringify({ team_id: rescueState.teamId }),
-            });
-        }
-
+        // Dispatch acknowledges on behalf of the assigned team — the
+        // backend records MISSION_ACCEPTED on the incident timeline.
         await rescueFetch(`/incidents/${encodeURIComponent(incidentId)}/accept`, {
             method: 'POST',
-            body: JSON.stringify({ notes: note || 'Alert received — acknowledged by rescue team.' }),
+            body: JSON.stringify({ notes: note || 'Alert received — acknowledged by dispatch.' }),
         });
 
         rescueState.lastResponseMsg = {
@@ -1072,18 +1080,43 @@ async function loadTeams() {
         return;
     }
 
+    renderTeamsTable();
+}
+
+/**
+ * Teams-available panel for the dispatch console. Availability comes from
+ * the team row (the backend flips it BUSY on assign, AVAILABLE on close),
+ * cross-checked against the live incident list for the mission each team
+ * is currently working on. FREE teams sort to the top.
+ */
+function renderTeamsTable() {
+    const activeInc = rescueState.incidents.filter(
+        i => ACTIVE_STATUSES.includes(i.status) && i.assigned_team_id
+    );
+    const freeRank = t => ((t.status || '').toUpperCase() === 'AVAILABLE' ? 0 : 1);
+    const ordered = [...rescueState.teams].sort((a, b) => freeRank(a) - freeRank(b));
+
     const tableHtml = `
         <table class="rescue-table">
-            <thead><tr><th>Team</th><th>Name</th><th>Type</th><th>Status</th><th>Location</th></tr></thead>
+            <thead><tr>
+                <th>Team</th><th>Name</th><th>Type</th><th>Status</th>
+                <th>Active missions</th><th>Location</th>
+            </tr></thead>
             <tbody>
-                ${rescueState.teams.map(t => `
+                ${ordered.map(t => {
+                    const missions = activeInc.filter(i => i.assigned_team_id === t.team_id);
+                    return `
                     <tr>
                         <td><strong>${esc(t.team_id)}</strong></td>
                         <td>${esc(t.team_name)}</td>
                         <td>${esc((t.team_type || '').replace(/_/g, ' '))}</td>
                         <td><span class="st st-${(t.status || '').toLowerCase()}">● ${esc(t.status)}</span></td>
+                        <td>${missions.length === 0
+                            ? '<span class="workflow-hint">Free for dispatch</span>'
+                            : missions.map(m => `<span class="req-chip">${esc(m.incident_id)}</span>`).join(' ')}</td>
                         <td>${esc(t.current_location || '—')}</td>
-                    </tr>`).join('')}
+                    </tr>`;
+                }).join('')}
             </tbody>
         </table>`;
 

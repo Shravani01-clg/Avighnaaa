@@ -223,10 +223,18 @@ function hideSosState() {
 async function sosLoadRelated(incident) {
     const deviceId = incident.device_id;
 
-    const [tlRes, riskRes, readingRes] = await Promise.allSettled([
+    // Teams ride along with the other lookups instead of queueing behind
+    // them — everything here is independent, so the modal fills in after
+    // ONE round of network latency instead of two.
+    const teamsP = sosState.teams.length
+        ? Promise.resolve({ data: sosState.teams })
+        : rescueFetch('/rescue-teams').catch(() => ({ data: sosState.teams }));
+
+    const [tlRes, riskRes, readingRes, teamsRes] = await Promise.allSettled([
         rescueFetch(`/incidents/${encodeURIComponent(incident.incident_id)}/timeline`),
         deviceId ? rescueFetch(`/risk/${encodeURIComponent(deviceId)}`) : Promise.reject(new Error('no device')),
         deviceId ? rescueFetch(`/sensor-data/${encodeURIComponent(deviceId)}`) : Promise.reject(new Error('no device')),
+        teamsP,
     ]);
 
     sosState.timeline =
@@ -249,11 +257,8 @@ async function sosLoadRelated(incident) {
             .filter((x) => Number.isFinite(x.diff))
             .sort((a, b) => a.diff - b.diff)[0]?.row || readings[0] || null;
 
-    if (!sosState.teams.length) {
-        try {
-            const teamsRes = await rescueFetch('/rescue-teams');
-            sosState.teams = teamsRes.data || [];
-        } catch { /* teams list is optional context */ }
+    if (teamsRes.status === 'fulfilled' && teamsRes.value && teamsRes.value.data) {
+        sosState.teams = teamsRes.value.data;
     }
 }
 
@@ -276,13 +281,14 @@ async function sosRefreshSilent() {
     if (!sosState.open) return;
     if (sosState.incident?.incident_id) {
         try {
-            const res = await rescueFetch(
-                `/incidents/${encodeURIComponent(sosState.incident.incident_id)}`
-            );
+            // Incident + timeline are independent — fetch them together so
+            // the 10s modal poll costs one round trip of waiting, not two.
+            const incId = encodeURIComponent(sosState.incident.incident_id);
+            const [res, tl] = await Promise.all([
+                rescueFetch(`/incidents/${incId}`),
+                rescueFetch(`/incidents/${incId}/timeline`),
+            ]);
             if (res.data) sosState.incident = res.data;
-            const tl = await rescueFetch(
-                `/incidents/${encodeURIComponent(sosState.incident.incident_id)}/timeline`
-            );
             sosState.timeline = tl.data || [];
             renderSosDetail();
         } catch { /* keep last known state; next tick retries */ }

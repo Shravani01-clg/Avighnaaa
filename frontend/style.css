@@ -3074,3 +3074,386 @@ body.emergency-active:not(.emergency-fullscreen) .page { transition: padding-bot
     .response-preset { width: 100%; }
     .rescue-inbox-status { flex-wrap: wrap; }
 }
+
+/* ==========================================================================
+   CROSS-LOGIN NOTIFICATIONS — bell + dropdown + toasts (notifications.js)
+   The same widget serves both logins; the backend scopes the feed:
+   control room sees "team assigned", rescue portal sees "rescue requested".
+   ========================================================================== */
+
+.notif-wrap { position: relative; }
+
+.notif-bell {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.notif-bell:hover {
+    border-color: var(--border-light);
+    background: var(--bg-surface-hover);
+    color: var(--text-main);
+}
+
+.notif-bell svg { width: 16px; height: 16px; opacity: 1; }
+
+.notif-badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--color-critical);
+    color: #fff;
+    font-size: 9.5px;
+    font-weight: 700;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.notif-badge.hidden { display: none !important; }
+
+.notif-panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: 360px;
+    max-width: calc(100vw - 32px);
+    background: var(--bg-card);
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    z-index: 60;
+    overflow: hidden;
+}
+
+.notif-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.notif-markall {
+    background: none;
+    border: none;
+    color: var(--color-info);
+    font-size: 10.5px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 2px 4px;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.notif-markall:hover { text-decoration: underline; }
+
+.notif-list { max-height: 380px; overflow-y: auto; }
+
+.notif-empty {
+    padding: 18px 14px;
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+.notif-item {
+    display: flex;
+    gap: 10px;
+    width: 100%;
+    padding: 11px 14px;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--border-color);
+    text-align: left;
+    cursor: pointer;
+    color: var(--text-main);
+    transition: background 0.15s;
+}
+
+.notif-item:hover { background: var(--bg-surface-hover); }
+.notif-item:last-child { border-bottom: none; }
+
+.notif-item-icon { color: var(--text-muted); flex-shrink: 0; margin-top: 1px; }
+.notif-item-icon svg { width: 14px; height: 14px; opacity: 1; }
+.notif-team .notif-item-icon { color: var(--color-info); }
+.notif-request .notif-item-icon { color: var(--color-critical); }
+
+.notif-item-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+}
+
+.notif-item-title { font-size: 12px; font-weight: 600; color: var(--text-main); }
+.notif-item-msg { font-size: 11px; color: var(--text-muted); line-height: 1.45; }
+.notif-item-time { font-size: 10px; color: var(--text-muted); opacity: 0.75; }
+
+.notif-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-info);
+    flex-shrink: 0;
+    margin-top: 4px;
+}
+
+.notif-request .notif-dot { background: var(--color-critical); }
+
+/* Toasts — new notifications arriving while signed in */
+#notif-toasts {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    z-index: 200;
+    max-width: 360px;
+}
+
+.notif-toast {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 12px 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-light);
+    border-left: 3px solid var(--color-info);
+    border-radius: 6px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+    cursor: pointer;
+    animation: notifToastIn 0.25s ease;
+    transition: opacity 0.2s, transform 0.2s;
+}
+
+.notif-toast.notif-request { border-left-color: var(--color-critical); }
+.notif-toast.leaving { opacity: 0; transform: translateX(12px); }
+
+.notif-toast-icon { color: var(--color-info); flex-shrink: 0; margin-top: 1px; }
+.notif-toast.notif-request .notif-toast-icon { color: var(--color-critical); }
+.notif-toast-icon svg { width: 15px; height: 15px; opacity: 1; }
+
+.notif-toast-body { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.notif-toast-body strong { font-size: 12px; color: var(--text-main); }
+.notif-toast-body span { font-size: 11px; color: var(--text-muted); line-height: 1.45; }
+
+.notif-toast-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+    flex-shrink: 0;
+}
+
+.notif-toast-close:hover { color: var(--text-main); }
+
+@keyframes notifToastIn {
+    from { opacity: 0; transform: translateX(12px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+@media (max-width: 768px) {
+    .notif-panel { width: 300px; }
+    #notif-toasts { left: 12px; right: 12px; max-width: none; }
+}
+
+/* ============================================================
+   RESCUE EQUIPMENT + PRE-DEPARTURE CHECKLIST (rescue login)
+   Same design language as the rest of the rescue portal:
+   surface cards, 1px borders, a left STATUS accent, uppercase
+   micro-labels and data-font numbers.
+   ============================================================ */
+
+/* Readiness tiles */
+.rescue-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 22px;
+}
+
+.rescue-summary-grid .summary-card { padding: 14px 16px; }
+.rescue-summary-grid .card-value { font-family: var(--font-data); font-size: 22px; }
+.rescue-summary-grid .card-subtext { font-size: 10.5px; margin-top: 4px; }
+
+/* Demo-mode strip (equipment tables not migrated yet) */
+.rescue-storage-note {
+    background: rgba(201, 138, 18, 0.08);
+    border: 1px solid rgba(201, 138, 18, 0.45);
+    border-left: 4px solid var(--color-warning);
+    color: var(--color-warning);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    margin-bottom: 18px;
+}
+
+/* Generic card used by equipment + recommendations + checklist head */
+.rescue-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    padding: 14px 16px;
+}
+
+/* Equipment item card — left accent follows the item status */
+.equip-card {
+    border-left: 4px solid var(--border-color);
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.equip-card:hover { background: var(--bg-surface-hover); }
+
+.equip-card.equip-available { border-left-color: var(--color-safe); }
+.equip-card.equip-in_use { border-left-color: var(--color-warning); }
+.equip-card.equip-maintenance { border-left-color: var(--color-critical); }
+.equip-card.equip-damaged { border-left-color: var(--color-critical); }
+.equip-card.equip-unavailable { border-left-color: var(--text-muted); }
+
+.equip-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.equip-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 14px;
+    flex-shrink: 0;
+}
+
+.equip-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-main);
+    flex: 1;
+    min-width: 0;
+    word-break: break-word;
+}
+
+.equip-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 6px 14px;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+}
+
+.equip-meta b { color: var(--text-main); font-family: var(--font-data); font-weight: 600; }
+
+.equip-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.equip-actions .rescue-note { margin-top: 0; flex-basis: 100%; }
+.equip-actions .rescue-select { min-width: 120px; }
+
+/* Items needing attention — critical wash, same family as inc-card */
+.equip-attention {
+    border-left: 4px solid var(--color-critical);
+    background: linear-gradient(90deg, rgba(196, 62, 62, 0.10), var(--bg-surface) 45%);
+}
+
+/* Standalone inputs (also styled inside .rescue-filters, kept identical) */
+.rescue-input, .rescue-select {
+    background: var(--bg-surface);
+    color: var(--text-main);
+    border: 1px solid var(--border-light);
+    border-radius: 5px;
+    padding: 6px 9px;
+    font-size: 12px;
+    font-family: var(--font-sans);
+    transition: border-color 0.2s;
+}
+
+.rescue-input:focus, .rescue-select:focus { outline: none; border-color: var(--accent-orange); }
+.rescue-input::placeholder { color: var(--text-muted); }
+
+/* Small button variant used on equipment cards */
+.btn-sm { padding: 5px 11px; font-size: 11px; border-radius: 4px; }
+
+/* Pre-departure checklist rows */
+.checklist-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    padding: 11px 14px;
+    font-size: 12.5px;
+    color: var(--text-main);
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.checklist-row:hover { background: var(--bg-surface-hover); border-color: var(--border-color); }
+
+.checklist-row:has(.checklist-box:checked) {
+    border-color: rgba(63, 174, 106, 0.5);
+    background: rgba(16, 185, 129, 0.06);
+}
+
+.checklist-box, .equip-checkout-box {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--color-safe);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+/* Action rows under checklist sections */
+.rescue-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
+
+/* AI recommendation disclaimer */
+.rescue-disclaimer { font-size: 11px; color: var(--text-muted); font-style: italic; margin-bottom: 12px; }
+
+/* Usage-history event log (compact timeline) */
+.rescue-timeline { margin-top: 14px; border-top: 1px solid var(--border-color); padding-top: 10px; }
+
+.rescue-timeline-row {
+    display: flex;
+    gap: 14px;
+    align-items: baseline;
+    padding: 6px 0;
+    border-bottom: 1px dashed var(--border-light);
+    font-size: 11px;
+}
+
+.rescue-timeline-row:last-child { border-bottom: none; }
+.rescue-timeline-row .tl-time { font-family: var(--font-mono); color: var(--text-muted); white-space: nowrap; min-width: 150px; }
+.rescue-timeline-row .tl-text { color: var(--text-main); }
