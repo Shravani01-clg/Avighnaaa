@@ -265,8 +265,99 @@
     el.innerHTML = usageHtml + eventsHtml;
   }
 
-  // ── loaders ──────────────────────────────────────────────────
+  // ── mission picker (pre-departure equipment check) ─────────────
 
+  const ACTIVE_HAZARD_STATUSES = [
+    "AWAITING_RESPONSE",
+    "ASSIGNED",
+    "ACCEPTED",
+    "EN_ROUTE",
+    "ON_SCENE",
+    "RESCUE_IN_PROGRESS",
+    "PERSON_SAFE",
+    "ESCALATED",
+  ];
+
+  const HAZARD_ICONS = {
+    SOS: "🆘",
+    GAS_LEAK: "🔥",
+    FIRE_HEAT: "🔥",
+    FLOOD: "🌊",
+    FALL: "🩺",
+    COMBINED: "⚠️",
+    ANOMALY: "👁️",
+    HIGH_RISK: "⚠️",
+  };
+
+  function renderMissionPicker() {
+    const el = $("checklist-missions");
+    if (!el) return;
+    el.innerHTML = '<p class="rescue-empty">Loading missions…</p>';
+
+    eqFetch("/incidents")
+      .then((body) => {
+        const active = (body.data || []).filter((i) =>
+          ACTIVE_HAZARD_STATUSES.includes(i.status)
+        );
+        if (!active.length) {
+          el.innerHTML =
+            '<p class="rescue-empty">No active missions right now — the equipment checklist for a mission appears here once an incident needs a team.</p>';
+          return;
+        }
+        return Promise.all(
+          active.map((i) =>
+            eqFetch(`/rescue-equipment/checklist/${encodeURIComponent(i.incident_id)}`)
+              .then((c) => ({ incident: i, checklist: c.data }))
+              .catch(() => ({ incident: i, checklist: null }))
+          )
+        ).then((rows) => {
+          el.innerHTML = rows
+            .map((r) => {
+              const i = r.incident;
+              const cl = r.checklist;
+              const kit = (cl && cl.required_items) || [];
+              const checked = (cl && cl.checked_items) || [];
+              const done = (cl && cl.status) || (kit.every((k) => checked.includes(k)) ? "COMPLETE" : "PENDING");
+              const selected = eqState.checklistIncident === i.incident_id;
+              const icon = HAZARD_ICONS[i.hazard_type] || "🚨";
+              const progress = cl && cl.required_items
+                ? `${cl.checked_items?.length || 0}/${cl.required_items.length} kit items confirmed`
+                : "kit not loaded";
+              return `
+              <div class="rescue-card" style="margin-bottom:10px">
+                <div class="equip-head">
+                  <span class="equip-icon">${icon}</span>
+                  <span class="equip-name">#${esc(i.incident_id)} — ${esc(i.hazard_label || i.hazard_type || "Incident")}</span>
+                  <span class="badge badge-critical">${esc(i.status.replace(/_/g, " "))}</span>
+                </div>
+                <div class="equip-meta">
+                  <span>🚒 Team: <b>${esc(i.assigned_team_id || "Unassigned")}</b></span>
+                  <span>📍 ${esc(i.location || "Location not configured")}</span>
+                  <span>🧰 Kit: <b>${esc(kit.join(", ") || "No items configured")}</b></span>
+                  <span>📦 ${esc(progress)}${done !== "COMPLETE" && kit.length ? " — checklist open" : ""}</span>
+                </div>
+                <div class="equip-actions">
+                  <button
+                    type="button"
+                    class="btn btn-rescue btn-sm"
+                    data-checklist-open="${esc(i.incident_id)}"
+                  >
+                    OPEN EQUIPMENT CHECKLIST
+                  </button>
+                </div>
+              </div>`;
+            })
+            .join("");
+        });
+      })
+      .catch((err) => {
+        el.innerHTML = `<p class="rescue-empty">Could not load active missions: ${esc(err.message)}</p>`;
+      });
+  }
+
+  function render() {}
+
+  // ── loaders ──────────────────────────────────────────────────
   async function loadEquipment() {
     const params = new URLSearchParams();
     const q = ($("equipment-search")?.value || "").trim();
@@ -336,6 +427,9 @@
       renderRecommendations(rec);
       eqState.selectedEquipment.clear();
       renderCheckoutChoices(rec.suggested_equipment || []);
+      // Re-render the mission list so the picked mission is highlighted
+      // even after it has been opened from the checklist page itself.
+      renderMissionPicker();
     } catch (err) {
       const el = $("checklist-items");
       if (el) el.innerHTML = `<p class="rescue-empty">${esc(err.message)}</p>`;
@@ -553,7 +647,10 @@
     // Load when the rescue portal becomes active, and on session changes.
     window.addEventListener("avighnaa:session", (ev) => {
       const role = ev.detail && ev.detail.role;
-      if (role === "rescue_team") loadEquipment();
+      if (role === "rescue_team") {
+        loadEquipment();
+        renderMissionPicker();
+      }
       else {
         eqState.items = [];
         eqState.checklist = null;
@@ -564,7 +661,15 @@
       const nav = e.target.closest && e.target.closest('[data-target="equipment"]');
       if (nav) setTimeout(loadEquipment, 200);
       const ck = e.target.closest && e.target.closest('[data-target="equipmentcheck"]');
-      if (ck && eqState.checklistIncident) setTimeout(() => openChecklist(eqState.checklistIncident), 200);
+      if (ck) setTimeout(() => {
+        if (eqState.checklistIncident) openChecklist(eqState.checklistIncident);
+        else renderMissionPicker();
+      }, 200);
+      const openMk = e.target.closest && e.target.closest("[data-checklist-open]");
+      if (openMk) {
+        const id = openMk.getAttribute("data-checklist-open");
+        if (id) openChecklist(id);
+      }
     });
   }
 
