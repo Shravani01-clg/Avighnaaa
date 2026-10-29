@@ -36,11 +36,12 @@
   ];
 
   // The dashboard's emergency panel is the CONTROL-ROOM view of an SOS.
-  // Once the control room closes the SOS alert, the panel leaves the
-  // dashboard — the incident row itself stays untouched in the database
-  // (closing incidents is the rescue team's workflow, and the record stays
-  // in SOS History). Non-SOS incidents (falls, equipment) have no SOS alert
-  // to close, so they keep showing while active.
+  // It stays on the dashboard for as long as the SOS alert is open, and
+  // leaves only once that alert is closed — the incident row itself stays
+  // untouched in the database (closing incidents is the rescue team's
+  // workflow, and the record stays in SOS History). Non-SOS incidents
+  // (falls, equipment) have no SOS alert to close, so they keep showing
+  // while active.
   function isClosedSosIncident(incident) {
     const alerts = (typeof appState !== "undefined" && appState.alerts) || [];
     const deviceSos = alerts.filter(
@@ -48,19 +49,21 @@
     );
     if (deviceSos.length === 0) return false; // not SOS-derived
 
-    // Alerts belonging to THIS incident: created around its detection time
-    // (the same ±10 min window SOS History uses), so an older closed SOS on
-    // the same belt can never hide a new, different emergency.
+    // Any unacknowledged SOS for this device means the emergency is still
+    // live — never hide it, no matter what other (older) alerts exist.
+    if (deviceSos.some((a) => !a.ack)) return false;
+
+    // Everything is closed: hide the panel only when at least one of those
+    // closed SOS alerts belongs to THIS incident (same ±10 min window SOS
+    // History uses), so an old closed SOS on the same belt cannot hide a
+    // new, different emergency.
     const start = new Date(
       incident.detected_at || incident.created_at || 0
     ).getTime();
-    const related = deviceSos.filter((a) => {
+    return deviceSos.some((a) => {
       const t = new Date(a.createdAt || 0).getTime();
       return !t || !start || Math.abs(t - start) <= 10 * 60 * 1000;
     });
-
-    const candidates = related.length > 0 ? related : deviceSos;
-    return candidates.every((a) => a.ack);
   }
 
   let currentIncident = null;
