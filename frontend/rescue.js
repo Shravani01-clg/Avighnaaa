@@ -487,6 +487,21 @@ async function loadRescueInbox() {
                 ${inc.rescue_requested ? '<span class="req-chip">🔔 RESCUE REQUESTED</span>' : ''}
                 ${closed ? '<span class="badge badge-info">Closed</span>' : ''}
             </div>
+            ${closed ? '' : `
+            <div class="inc-assign-row" onclick="event.stopPropagation()">
+                <span class="inc-assign-who">
+                    ${inc.assigned_team_id
+                        ? `🚒 ${esc(inc.assigned_team_id)} assigned`
+                        : 'No team assigned'}
+                </span>
+                <select class="inc-team-select" aria-label="Choose rescue team">
+                    ${teamOptionsHtml(inc)}
+                </select>
+                <button class="btn btn-small"
+                    onclick="assignTeamFromCard('${esc(inc.incident_id)}', this)">
+                    ${inc.assigned_team_id ? 'REASSIGN' : 'ASSIGN'}
+                </button>
+            </div>`}
             ${overdue ? `
             <div class="overdue-strip">
                 ⚠️ RESPONSE OVERDUE — Timer: <span data-elapsed-from="${esc(overdue)}">${elapsedClock(overdue)}</span>
@@ -810,15 +825,88 @@ function renderAssignment(inc) {
         </div>`;
 }
 
+/**
+ * Compact team options for the in-card assignment row. Available teams
+ * sort to the top; the AI-recommended type is preselected when it is
+ * free (falls back to the first available team).
+ */
+function teamOptionsHtml(inc) {
+    const freeRank = t => ((t.status || '').toUpperCase() === 'AVAILABLE' ? 0 : 1);
+    const teams = [...rescueState.teams].sort((a, b) => freeRank(a) - freeRank(b));
+
+    if (teams.length === 0) {
+        return '<option value="">No teams loaded — refresh</option>';
+    }
+
+    const recommended = teams.find(
+        t => (t.status || '').toUpperCase() === 'AVAILABLE' &&
+             t.team_type === inc.recommended_team_type
+    );
+    const fallback = teams.find(t => (t.status || '').toUpperCase() === 'AVAILABLE');
+    const preselect = (recommended || fallback || teams[0]).team_id;
+
+    return teams.map(t => {
+        const free = (t.status || '').toUpperCase() === 'AVAILABLE';
+        const rec = t.team_type === inc.recommended_team_type ? ' ★RECOMMENDED' : '';
+        return `<option value="${esc(t.team_id)}"${
+            t.team_id === preselect ? ' selected' : ''
+        }>${esc(t.team_id)} — ${esc(t.team_name)} · ${
+            free ? 'AVAILABLE' : esc(t.status || 'BUSY')
+        }${rec}</option>`;
+    }).join('');
+}
+
+/** ASSIGN button inside an inbox card — reads the card's own <select>. */
+async function assignTeamFromCard(incidentId, btnEl) {
+    const row = btnEl && btnEl.closest('.inc-assign-row');
+    const select = row && row.querySelector('.inc-team-select');
+    const teamId = select ? select.value : '';
+    if (!teamId) {
+        window.showAppToast?.('Assign failed', 'Select a rescue team first.', 'error');
+        return;
+    }
+    await assignTeam(incidentId, teamId);
+}
+window.assignTeamFromCard = assignTeamFromCard;
+
+// One assignment per incident at a time — repeated clicks while a
+// request is in flight are ignored (the card button is also disabled
+// by the re-render, but the guard is the real protection).
+const assignInFlight = new Set();
+
 async function assignTeam(incidentId, teamId) {
+    if (assignInFlight.has(incidentId)) return;
+    assignInFlight.add(incidentId);
+
     try {
         await rescueFetch(`/incidents/${encodeURIComponent(incidentId)}/assign`, {
             method: 'POST',
             body: JSON.stringify({ team_id: teamId }),
         });
-        await openIncident(incidentId);
+
+        // Confirmed by the backend — the incident status is now ASSIGNED
+        // and the control room sees it through its own poll.
+        window.showAppToast?.(
+            'Team assigned',
+            `${teamId} assigned to ${incidentId} — status is now TEAM ASSIGNED.`,
+            'success'
+        );
+
+        // Refresh the detail panel only when this incident is the one
+        // open in it — assigning from another card must not jump views.
+        if (rescueState.selectedId === incidentId) {
+            await openIncident(incidentId);
+        }
+        await loadRescueInbox();
     } catch (err) {
-        alert(`Assign failed: ${err.message}`);
+        // Assignment failed — the incident status was NOT changed.
+        window.showAppToast?.(
+            'Assign failed',
+            `Could not assign ${teamId} to ${incidentId}: ${err.message}`,
+            'error'
+        );
+    } finally {
+        assignInFlight.delete(incidentId);
     }
 }
 window.assignTeam = assignTeam;
@@ -880,9 +968,18 @@ async function missionAction(incidentId, endpoint) {
             method: 'POST',
             body: JSON.stringify({}),
         });
+        window.showAppToast?.(
+            'Update recorded',
+            `Mission step recorded for ${incidentId} — the control room sees it live.`,
+            'success'
+        );
         await openIncident(incidentId);
     } catch (err) {
-        alert(`Action failed: ${err.message}`);
+        window.showAppToast?.(
+            'Action failed',
+            `Could not record the mission step: ${err.message}`,
+            'error'
+        );
     }
 }
 window.missionAction = missionAction;

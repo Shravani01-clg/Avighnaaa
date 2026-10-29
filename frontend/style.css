@@ -2181,6 +2181,62 @@ input[type="number"]:focus {
     white-space: nowrap;
 }
 
+/* Chip row for the OTHER active emergencies under the panel header —
+   every open incident stays one click away when several are active. */
+.dash-emergency-others {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.dash-emergency-others .de-chip-label {
+    font-size: 11px;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: rgba(255, 160, 160, 0.7);
+}
+
+.dash-em-chip {
+    padding: 5px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 77, 77, 0.4);
+    background: rgba(255, 77, 77, 0.1);
+    color: #ffb3b3;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    cursor: pointer;
+}
+
+.dash-em-chip:hover { background: rgba(255, 77, 77, 0.22); }
+.dash-em-chip.escalated { border-color: #ff4d4d; color: #ff8080; }
+
+/* Rescue-status chip on dashboard / alerts SOS cards ("🚒 ASSIGNED · RT-01")
+   — the admin sees the rescue workflow progress without leaving the page. */
+.alert-incident-chip {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(59, 130, 246, 0.45);
+    background: rgba(59, 130, 246, 0.12);
+    color: #93c5fd;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+}
+
+/* "Close SOS" — primary close action on alert cards. */
+.btn-close-sos {
+    border-color: var(--emergency-color, #ff4d4d);
+    color: #ff8f8f;
+}
+
+.btn-close-sos:hover { background: rgba(255, 77, 77, 0.15); }
+
 /* Minimized banner while SOS remains active.
    Anchored bottom-right so it can never cover the dashboard header, the
    navigation, charts or tables — it is a small floating indicator with a
@@ -2397,9 +2453,14 @@ body.emergency-active:not(.emergency-fullscreen) .page { transition: padding-bot
 }
 
 /* Layout: inbox + detail */
-.rescue-layout { display: grid; grid-template-columns: 1fr 1.4fr; gap: 18px; margin-bottom: 18px; }
+/* align-items: start — the shorter pane no longer stretches to the row
+   height, which used to leave a mostly-empty scrollable column. Both
+   columns flow with the page instead of nesting their own scrollbars. */
+.rescue-layout { display: grid; grid-template-columns: 1fr 1.4fr; gap: 18px; margin-bottom: 18px; align-items: start; }
 @media (max-width: 1100px) { .rescue-layout { grid-template-columns: 1fr; } }
-.rescue-card-list { display: flex; flex-direction: column; gap: 12px; max-height: 560px; overflow-y: auto; }
+/* Natural height: genuinely long lists use the page scrollbar (one
+   scroll context), removing the uneven two-scrollbar behaviour. */
+.rescue-card-list { display: flex; flex-direction: column; gap: 10px; }
 .rescue-empty { color: var(--text-muted); font-size: 12px; padding: 10px 0; }
 .rescue-note { font-size: 11px; color: var(--text-muted); margin-top: 10px; }
 
@@ -2422,6 +2483,39 @@ body.emergency-active:not(.emergency-fullscreen) .page { transition: padding-bot
 .inc-id { font-family: var(--font-mono); font-weight: 700; font-size: 13px; }
 .inc-hazard { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
 .inc-meta { font-size: 11px; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 12px; }
+
+/* In-card assignment row (Emergency Inbox) — dispatch assigns a team
+   directly from the request card, with no scrolling to a separate
+   panel during an emergency. Clicks never trigger the card itself. */
+.inc-assign-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-light);
+    border-radius: 5px;
+    flex-wrap: wrap;
+}
+
+.inc-assign-who {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.inc-team-select {
+    flex: 1;
+    min-width: 160px;
+    padding: 5px 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-main);
+    font-size: 11px;
+}
 .inc-person { color: var(--color-critical); font-weight: 700; }
 .inc-timer { font-family: var(--font-mono); font-size: 11px; color: var(--color-warning); }
 .overdue-strip {
@@ -3301,6 +3395,14 @@ body.emergency-active:not(.emergency-fullscreen) .page { transition: padding-bot
 
 .notif-toast-icon { color: var(--color-info); flex-shrink: 0; margin-top: 1px; }
 .notif-toast.notif-request .notif-toast-icon { color: var(--color-critical); }
+
+/* Action feedback toasts (showAppToast): close alert / request rescue /
+   assign team. Same look as the notification toasts, no click actions. */
+.notif-toast.notif-action { cursor: default; }
+.notif-toast.notif-action.success { border-left-color: var(--color-safe); }
+.notif-toast.notif-action.success .notif-toast-icon { color: var(--color-safe); }
+.notif-toast.notif-action.error { border-left-color: var(--color-critical); }
+.notif-toast.notif-action.error .notif-toast-icon { color: var(--color-critical); }
 .notif-toast-icon svg { width: 15px; height: 15px; opacity: 1; }
 
 .notif-toast-body { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }

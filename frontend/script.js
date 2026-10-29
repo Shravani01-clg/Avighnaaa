@@ -1048,18 +1048,56 @@ window.emergencyReturnToDashboard = function () {
  * up in SOS History and the alerts page; the client-only fallback alert is
  * acknowledged locally. Only then does the overlay close.
  */
+/**
+ * "Acknowledge & Close" — the ADMIN's decision to close the SOS alert.
+ *
+ * Real alerts are resolved via the backend (PATCH /api/alerts/:id/resolve)
+ * so the record — device, worker, times, resolution — is saved and shows
+ * up in SOS History and the alerts page; the client-only fallback alert is
+ * acknowledged locally. Only a fully confirmed closure clears the overlay:
+ * on any backend failure the alert stays on screen and an error toast
+ * explains why.
+ */
+let emergencyCloseInFlight = false;
+
 window.emergencyCloseAlerts = async function () {
     const devices = [...emergencyState.activeDeviceIds];
 
-    if (devices.length === 0) return;
+    if (devices.length === 0 || emergencyCloseInFlight) return;
 
+    // Guard against accidental closure of a full-screen emergency.
+    if (!confirm(
+        `Close the SOS alert${devices.length > 1 ? 's' : ''} for Belt ` +
+        `${devices.join(', ')}?\n\n` +
+        'The alert leaves the dashboard but stays saved in SOS History.'
+    )) return;
+
+    // Real backend SOS alerts carry isSOS; the client-only fallback alert
+    // does not — match either form so the fallback can never linger after
+    // the overlay is closed.
     const sosAlerts = appState.alerts.filter(
-        a => !a.ack && a.isSOS && devices.includes(a.belt)
+        a => !a.ack && (a.isSOS || a.synthetic) && devices.includes(a.belt)
     );
 
+    emergencyCloseInFlight = true;
+
+    let failed = 0;
     for (const alert of sosAlerts) {
         logAlertAsEvent(alert);
-        await resolveAlertOnBackend(alert);
+        const ok = await resolveAlertOnBackend(alert);
+        if (!ok) failed++;
+    }
+
+    emergencyCloseInFlight = false;
+
+    // A backend failure must NOT silently drop the alert — keep it open.
+    if (failed > 0) {
+        window.showAppToast(
+            'Close failed',
+            `Could not close ${failed} SOS alert${failed > 1 ? 's' : ''} — the backend did not confirm. The alert stays open; try again.`,
+            'error'
+        );
+        return;
     }
 
     emergencyState.activeDeviceIds.clear();
@@ -1071,12 +1109,111 @@ window.emergencyCloseAlerts = async function () {
         'STATUS',
         'tag-status',
         `SOS acknowledged and closed by ${
-            appState.auth.username || 'control room'
+            appState.auth?.username || 'control room'
         } for Belt ${devices.join(', ')}`
+    );
+
+    window.showAppToast(
+        'SOS alert closed',
+        'SOS alert closed successfully. The record stays in SOS History.',
+        'success'
     );
 
     renderAlerts();
     emergencyRefresh();
+    refreshDashboardEmergencyPanel();
+};
+
+// Short rescue-status label for a SOS alert's linked incident, shown as a
+// chip on the dashboard / alerts cards (e.g. "🚒 ASSIGNED · RT-01"). Reads
+// appState.incidents — kept fresh by the dashboard emergency panel's
+// /api/incidents poll — so a team assignment appears within one poll
+// cycle on every view, with no extra request and no duplicate state.
+function sosIncidentChip(alert) {
+    if (!alert || (!alert.isSOS && !alert.synthetic)) return '';
+
+    const inc = (appState.incidents || []).find(
+        i =>
+            i.device_id === alert.belt &&
+            !['RESOLVED', 'CANCELLED'].includes(i.status)
+    );
+
+    if (!inc) return '';
+
+    const label = (inc.status || '').replace(/_/g, ' ');
+
+    return `
+        <span
+            class="alert-incident-chip"
+            title="Rescue status of incident #${inc.incident_id}"
+        >
+            🚒 ${label}${inc.assigned_team_id ? ` · ${inc.assigned_team_id}` : ''}
+        </span>
+    `;
+}
+
+// "Close SOS" action on a dashboard/alerts SOS card. Confirms first,
+// resolves through the existing backend mechanism (the client-only
+// fallback alert is acknowledged locally), and only a confirmed closure
+// removes the card — the record stays in SOS History. If the full-screen
+// overlay is open for the same belt it is cleared too, so the two views
+// can never disagree. Repeated clicks while closing are ignored.
+let sosCloseInFlight = new Set();
+
+window.closeSosAlert = async function (id) {
+    if (sosCloseInFlight.has(id)) return; // operation already in progress
+
+    const alert = appState.alerts.find(a => a.id === id);
+    if (!alert || alert.ack) return;
+
+    if (!confirm(
+        'Close this SOS alert?\n\n' +
+        'The alert leaves the dashboard but stays saved in SOS History.'
+    )) return;
+
+    sosCloseInFlight.add(id);
+    logAlertAsEvent(alert);
+    const ok = await resolveAlertOnBackend(alert);
+    sosCloseInFlight.delete(id);
+
+    if (!ok) {
+        window.showAppToast(
+            'Close failed',
+            'Could not close the SOS alert — the backend did not confirm. The alert stays on the dashboard.',
+            'error'
+        );
+        return;
+    }
+
+    // Clear the matching full-screen overlay entry (same belt), if open.
+    if (alert.belt && emergencyState.activeDeviceIds.has(alert.belt)) {
+        emergencyState.activeDeviceIds.delete(alert.belt);
+        delete emergencyState.snapshots[alert.belt];
+        if (emergencyState.selectedDeviceId === alert.belt) {
+            emergencyState.selectedDeviceId = null;
+        }
+        if (emergencyState.activeDeviceIds.size === 0) {
+            emergencyState.minimized = false;
+        }
+        emergencyRefresh();
+    }
+
+    addLogEntry(
+        'STATUS',
+        'tag-status',
+        `SOS alert closed by ${
+            appState.auth?.username || 'control room'
+        } (Belt ${alert.belt})`
+    );
+
+    window.showAppToast(
+        'SOS alert closed',
+        'SOS alert closed successfully. The record stays in SOS History.',
+        'success'
+    );
+
+    renderAlerts();
+    refreshDashboardEmergencyPanel();
 };
 
 // ==========================================================================
@@ -1174,9 +1311,21 @@ async function loadAlertsFromBackend() {
 
         // Synthetic client-only alerts (the SOS fallback) have no backend
         // row — keep the unacknowledged ones across polls so the SOS alert
-        // stays on the dashboard until the admin acknowledges it.
+        // stays on the dashboard until the admin acknowledges it. A
+        // synthetic entry is DROPPED as soon as the backend has its own
+        // unacknowledged SOS alert for the same device, so one emergency
+        // can never show up twice (real alert + leftover fallback).
+        const realSosBelts = new Set(
+            (result.data || [])
+                .filter(alert =>
+                    (alert.alert_type || '').toUpperCase() === 'SOS' &&
+                    !alert.is_resolved
+                )
+                .map(alert => alert.device_id)
+        );
+
         const pendingSynthetic = appState.alerts.filter(
-            a => a.synthetic && !a.ack
+            a => a.synthetic && !a.ack && !realSosBelts.has(a.belt)
         );
 
         appState.alerts =
@@ -1216,6 +1365,11 @@ async function loadAlertsFromBackend() {
 
                     belt: alert.device_id,
 
+                    // Raw creation time — lets the dashboard panel decide
+                    // whether an SOS alert belongs to the incident it is
+                    // showing (the panel hides once that alert is closed).
+                    createdAt: alert.created_at || null,
+
                     time:
                         alert.created_at
                             ? new Date(
@@ -1233,6 +1387,7 @@ async function loadAlertsFromBackend() {
         );
 
         renderAlerts();
+        refreshDashboardEmergencyPanel();
 
     } catch (error) {
 
@@ -1243,14 +1398,19 @@ async function loadAlertsFromBackend() {
     }
 }
 
-// Resolve an alert via the backend. Only real backend alerts (numeric id) are
-// sent to PATCH /api/alerts/:alertId/resolve — synthetic client-only alerts
-// (e.g. the SOS fallback) are acknowledged locally without an API call.
+// Resolve an alert via the backend (PATCH /api/alerts/:alertId/resolve).
+// Real backend alerts (UUID ids) are resolved server-side; client-only
+// fallback alerts (synthetic flag) are acknowledged locally without an
+// API call.
 async function resolveAlertOnBackend(alert) {
     if (!alert || alert.ack) return true; // nothing to do
 
-    // Synthetic alerts have no backend row — acknowledge locally only.
-    if (alert.synthetic || typeof alert.id !== 'number') {
+    // Client-only fallback alerts have no backend row — acknowledge locally.
+    // (Do NOT gate on id type: Supabase alert ids are UUIDs, and the
+    // backend resolve endpoint validates UUID format. Gating on
+    // `typeof id !== 'number'` silently skipped every real alert, so the
+    // ack lived only in memory and the alert reappeared on the next poll.)
+    if (alert.synthetic) {
         alert.ack = true;
         return true;
     }
@@ -1284,6 +1444,63 @@ async function resolveAlertOnBackend(alert) {
         return false;
     }
 }
+
+// Re-evaluate the dashboard emergency panel after alert state changes, so a
+// closed SOS leaves the dashboard immediately instead of waiting for the
+// next 10s poll. The panel itself is owned by dashboard-rescue.js.
+function refreshDashboardEmergencyPanel() {
+    if (typeof window.refreshDashboardEmergency === 'function') {
+        window.refreshDashboardEmergency();
+    }
+}
+
+// ─── App toasts (action feedback) ────────────────────────────
+// Small success/error/info toasts for explicit user actions (close alert,
+// request rescue, assign team). Reuses the SAME #notif-toasts host and
+// .notif-toast styles as the notification bell, but carries no
+// notification-record side effects (no mark-read / open-incident).
+window.showAppToast = function (title, message, kind = 'info') {
+    let host = document.getElementById('notif-toasts');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'notif-toasts';
+        document.body.appendChild(host);
+    }
+
+    const icon = kind === 'success'
+        ? 'check-circle'
+        : kind === 'error'
+        ? 'alert-triangle'
+        : 'info';
+
+    const toast = document.createElement('div');
+    toast.className = `notif-toast notif-action ${kind}`;
+    toast.setAttribute('role', 'status');
+    toast.innerHTML = `
+        <span class="notif-toast-icon"><i data-lucide="${icon}"></i></span>
+        <span class="notif-toast-body">
+            <strong></strong>
+            <span></span>
+        </span>
+        <button type="button" class="notif-toast-close" aria-label="Dismiss">&times;</button>`;
+
+    // Text set via textContent — titles/messages can carry user data.
+    toast.querySelector('strong').textContent = title;
+    toast.querySelector('.notif-toast-body span').textContent = message;
+
+    const dismiss = () => {
+        toast.classList.add('leaving');
+        setTimeout(() => toast.remove(), 250);
+    };
+    toast.querySelector('.notif-toast-close')?.addEventListener('click', dismiss);
+
+    host.appendChild(toast);
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+
+    // Success/info fade on their own; errors stay until dismissed.
+    if (kind !== 'error') setTimeout(dismiss, 6000);
+    return dismiss;
+};
 
 // ==========================================================================
 // Device connection + movement state
@@ -2360,6 +2577,12 @@ const appState = {
     deviceFallState: {},
 
     alerts: [],
+
+    // Active incident list (kept fresh by dashboard-rescue.js polling
+    // /api/incidents). renderAlerts uses it to show the RESCUE STATUS of
+    // each SOS alert on the dashboard (e.g. "🚒 TEAM ASSIGNED") without
+    // any extra request — one shared source of truth, no duplicate state.
+    incidents: [],
 
     charts: {
         temp: null,
@@ -4592,6 +4815,31 @@ function renderAlerts() {
                 w.sensorData?.sos === true
         );
 
+    // The dashboard's 3 visible slots must always include every ACTIVE
+    // (unacknowledged) SOS alert first — a current emergency is never
+    // pushed out of view by newer routine warnings. The remaining slots
+    // fill in the existing newest-first order. Nothing is dropped: the
+    // alerts page and SOS History still show the complete list.
+    const dashIds = new Set();
+    for (const a of appState.alerts) {
+        if (!a.ack && (a.isSOS || a.synthetic)) dashIds.add(a.id);
+    }
+    if (dashIds.size > 3) {
+        const keep = new Set(
+            [...dashIds]
+                .slice(0, 3)
+        );
+        for (const a of appState.alerts) {
+            if (dashIds.has(a.id) && !keep.has(a.id)) dashIds.delete(a.id);
+        }
+    }
+    if (dashIds.size < 3) {
+        for (const a of appState.alerts) {
+            if (dashIds.size >= 3) break;
+            if (!a.ack && !dashIds.has(a.id)) dashIds.add(a.id);
+        }
+    }
+
     appState.alerts.forEach(
         alert => {
 
@@ -4665,8 +4913,10 @@ function renderAlerts() {
             // The dashboard shows only ONGOING (unacknowledged) alerts —
             // once the admin acknowledges one it leaves the dashboard and
             // stays recorded on the alerts page and in SOS History.
+            // dashIds gives ACTIVE SOS alerts the 3 slots first (see above).
             if (
                 !alert.ack &&
+                dashIds.has(alert.id) &&
                 dashContainer.children.length <
                 3
             ) {
@@ -4716,11 +4966,27 @@ function renderAlerts() {
                                 ·
                                 ${alert.time}
 
+                                ${sosIncidentChip(alert)}
+
                             </div>
 
                             ${aiHtml}
 
                         </div>
+
+                        ${
+                            alert.isSOS && !alert.ack
+                                ? `
+                                    <button
+                                        class="btn btn-small btn-close-sos"
+                                        style="margin-left: 12px; height: fit-content;"
+                                        onclick="closeSosAlert('${alert.id}')"
+                                    >
+                                        Close SOS
+                                    </button>
+                                `
+                                : ''
+                        }
 
                     </div>
                 `;
@@ -4775,6 +5041,8 @@ function renderAlerts() {
                             ·
                             ${alert.time}
 
+                            ${sosIncidentChip(alert)}
+
                         </div>
 
                         ${aiHtml}
@@ -4785,11 +5053,19 @@ function renderAlerts() {
                         !alert.ack
                             ? `
                                 <button
-                                    class="btn btn-small"
+                                    class="btn btn-small${alert.isSOS ? ' btn-close-sos' : ''}"
                                     style="margin-left: 12px; height: fit-content;"
-                                    onclick="ackAlert('${alert.id}')"
+                                    onclick="${
+                                        alert.isSOS
+                                            ? `closeSosAlert('${alert.id}')`
+                                            : `ackAlert('${alert.id}')`
+                                    }"
                                 >
-                                    Acknowledge
+                                    ${
+                                        alert.isSOS
+                                            ? 'Close SOS'
+                                            : 'Acknowledge'
+                                    }
                                 </button>
                             `
                             : `
@@ -4896,6 +5172,7 @@ window.ackAlert = async function(id) {
         await resolveAlertOnBackend(alert);
     }
     renderAlerts();
+    refreshDashboardEmergencyPanel();
 };
 
 window.acknowledgeAllAlerts = async function() {
@@ -4904,6 +5181,7 @@ window.acknowledgeAllAlerts = async function() {
     // Resolve each real backend alert via the API; synthetic ones locally
     await Promise.all(unresolved.map(a => resolveAlertOnBackend(a)));
     renderAlerts();
+    refreshDashboardEmergencyPanel();
 };
 
 // ==========================================================================

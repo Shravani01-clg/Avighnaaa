@@ -410,6 +410,11 @@
 
                     </div>
 
+                    <!-- Toast host for action feedback (showAppToast in
+                         script.js + pushNotifToast in notifications.js).
+                         Empty by default; toasts are appended at runtime. -->
+                    <div id="notif-toasts"></div>
+
                     <div class="zone-info">
                         <i data-lucide="map-pin"></i>
                         Zone A &middot; Main Shaft
@@ -506,6 +511,15 @@
                         <span class="de-value" id="dash-emergency-status">Awaiting rescue request</span>
                     </div>
 
+                    <!-- Chip row for the OTHER active emergencies — shown only
+                         when more than one incident is open, so a newly
+                         generated SOS is visible without hiding the rest. -->
+                    <div
+                        class="dash-emergency-others hidden"
+                        id="dash-emergency-others"
+                        aria-label="Other active emergencies"
+                    ></div>
+
                     <!-- Latest recorded rescue response for THIS incident
                          (filled from /incidents/:id/timeline — real events only) -->
                     <div
@@ -537,6 +551,17 @@
                             id="dash-open-sos-detail"
                         >
                             OPEN SOS DETAILS
+                        </button>
+                        <!-- Closes the SOS ALERT for this incident's device
+                             through the existing backend mechanism; the
+                             panel then leaves the dashboard (the incident
+                             row itself stays in the database). -->
+                        <button
+                            type="button"
+                            class="btn btn-secondary btn-close-sos"
+                            id="dash-close-alert"
+                        >
+                            ✖ CLOSE ALERT
                         </button>
                         <span
                             class="dash-emergency-msg"

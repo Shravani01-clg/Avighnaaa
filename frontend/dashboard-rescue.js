@@ -35,13 +35,49 @@
     "ON_SCENE", "RESCUE_IN_PROGRESS", "PERSON_SAFE", "ESCALATED",
   ];
 
+  // The dashboard's emergency panel is the CONTROL-ROOM view of an SOS.
+  // Once the control room closes the SOS alert, the panel leaves the
+  // dashboard — the incident row itself stays untouched in the database
+  // (closing incidents is the rescue team's workflow, and the record stays
+  // in SOS History). Non-SOS incidents (falls, equipment) have no SOS alert
+  // to close, so they keep showing while active.
+  function isClosedSosIncident(incident) {
+    const alerts = (typeof appState !== "undefined" && appState.alerts) || [];
+    const deviceSos = alerts.filter(
+      (a) => a.belt === incident.device_id && (a.isSOS || a.synthetic)
+    );
+    if (deviceSos.length === 0) return false; // not SOS-derived
+
+    // Alerts belonging to THIS incident: created around its detection time
+    // (the same ±10 min window SOS History uses), so an older closed SOS on
+    // the same belt can never hide a new, different emergency.
+    const start = new Date(
+      incident.detected_at || incident.created_at || 0
+    ).getTime();
+    const related = deviceSos.filter((a) => {
+      const t = new Date(a.createdAt || 0).getTime();
+      return !t || !start || Math.abs(t - start) <= 10 * 60 * 1000;
+    });
+
+    const candidates = related.length > 0 ? related : deviceSos;
+    return candidates.every((a) => a.ack);
+  }
+
   let currentIncident = null;
+  // The incident the admin is focusing on (null = newest active). A newly
+  // generated SOS must surface immediately — it is never shadowed by an
+  // older open incident, and every other active one stays reachable via
+  // the chip row rendered under the panel header.
+  let selectedIncidentId = null;
+  let lastOpenIncidents = []; // last poll's active list (chip switcher)
   let refreshTimer = null;
   // Guards against a second ping while the first one is still in flight.
   // The button is also disabled, but the 10s poll re-renders the panel and
   // would otherwise re-enable it mid-request (a second click would then
   // reach the backend).
   let pingInFlight = false;
+  // One CLOSE ALERT operation at a time (mirrors pingInFlight).
+  let closeAlertInFlight = false;
 
   const $ = (id) => document.getElementById(id);
 
@@ -61,13 +97,21 @@
   }
 
   /** Render the panel for one incident (or hide it when there is none). */
-  function render(incident) {
+  function render(incident, openList) {
     const panel = $("dashboard-emergency");
     if (!panel) return;
     currentIncident = incident;
 
+    // Remember which incident the admin is on while it stays active, so
+    // the 10s poll refreshes the SAME incident instead of jumping around.
+    if (incident && ACTIVE_STATUSES.includes(incident.status)) {
+      selectedIncidentId = incident.incident_id;
+    }
+
     if (!incident) {
       panel.classList.add("hidden");
+      selectedIncidentId = null;
+      renderIncidentChips(null, openList || []);
       return;
     }
 
@@ -121,9 +165,82 @@
       reqBtn.textContent = "🚒 REQUEST RESCUE TEAM";
     }
 
+    // CLOSE ALERT closes the SOS alert for this incident's device through
+    // the existing backend mechanism. As soon as that alert is closed the
+    // panel itself leaves the dashboard (see isClosedSosIncident) — the
+    // incident row stays untouched in the backend and in SOS History.
+    const closeBtn = $("dash-close-alert");
+    if (closeBtn) {
+      const hasOpenSos = (appState.alerts || []).some(
+        (a) => !a.ack && (a.isSOS || a.synthetic) && a.belt === incident.device_id
+      );
+      if (closeAlertInFlight) {
+        closeBtn.disabled = true;
+        closeBtn.textContent = "✖ CLOSING…";
+        closeBtn.classList.remove("hidden");
+      } else if (hasOpenSos && !isDone) {
+        closeBtn.disabled = false;
+        closeBtn.textContent = "✖ CLOSE ALERT";
+        closeBtn.classList.remove("hidden");
+      } else {
+        // Nothing to close (e.g. a non-SOS incident) — don't offer it.
+        closeBtn.disabled = true;
+        closeBtn.classList.add("hidden");
+      }
+    }
+
     // Users can only open the incident view; the rescue team gets its portal.
     viewBtn.dataset.target = window.avighnaaRole === "user" ? "" : incident.incident_id;
+
+    renderIncidentChips(incident, openList || lastOpenIncidents);
   }
+
+  /**
+   * Chip row for the OTHER active emergencies. Nothing is hidden when a
+   * new SOS arrives: the panel focuses the newest active incident, and
+   * every other open one stays one click away here.
+   */
+  function renderIncidentChips(current, open) {
+    const chipsEl = $("dash-emergency-others");
+    if (!chipsEl) return;
+
+    const others = (open || []).filter(
+      (i) => !current || i.incident_id !== current.incident_id
+    );
+
+    if (others.length === 0) {
+      chipsEl.classList.add("hidden");
+      chipsEl.innerHTML = "";
+      return;
+    }
+
+    chipsEl.classList.remove("hidden");
+    chipsEl.innerHTML =
+      `<span class="de-chip-label">${open.length} active &mdash; switch:</span>` +
+      others
+        .map((i) => {
+          // incident ids are backend-generated (e.g. AV-1024); strip any
+          // character that could break out of the inline handler.
+          const safe = String(i.incident_id).replace(/[^A-Za-z0-9_-]/g, "");
+          return `
+            <button
+              type="button"
+              class="dash-em-chip${i.status === "ESCALATED" ? " escalated" : ""}"
+              onclick="dashSelectIncident('${safe}')"
+              title="${i.severity || ""} ${i.hazard_type || "incident"}${i.location ? ` at ${i.location}` : ""}"
+            >
+              ${i.status === "ESCALATED" ? "⚠️ " : ""}#${safe}
+              · ${String(i.status || "").replace(/_/g, " ")}
+            </button>`;
+        })
+        .join("");
+  }
+
+  /** Chip click — focus another active incident without a refetch. */
+  window.dashSelectIncident = function (id) {
+    const inc = lastOpenIncidents.find((i) => i.incident_id === id);
+    if (inc) render(inc, lastOpenIncidents);
+  };
 
   /** Pull the most relevant open incident (or the latest resolved one). */
   async function refresh() {
@@ -136,23 +253,35 @@
       const body = await res.json();
       const all = Array.isArray(body.data) ? body.data : [];
 
+      // Shared with renderAlerts (script.js) so every SOS alert card can
+      // show the rescue status ("🚒 ASSIGNED · RT-01") from the same poll
+      // — one source of truth, no extra request.
+      if (typeof appState !== "undefined") appState.incidents = all;
+
       const open = all
         .filter((i) => ACTIVE_STATUSES.includes(i.status))
-        .sort((a, b) => {
-          const rank = { ESCALATED: 0, AWAITING_RESPONSE: 1 };
-          const ra = rank[a.status] ?? 2;
-          const rb = rank[b.status] ?? 2;
-          if (ra !== rb) return ra - rb;
-          return new Date(b.created_at) - new Date(a.created_at);
-        });
+        // A closed SOS leaves the dashboard; the incident row stays in the
+        // backend and SOS History untouched.
+        .filter((i) => !isClosedSosIncident(i))
+        // NEWEST FIRST: a newly generated SOS incident must surface
+        // immediately instead of being shadowed by an older open one
+        // (previously an old ESCALATED incident always won the panel).
+        // Every other active incident stays reachable via the chip row.
+        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+      lastOpenIncidents = open;
 
       if (open.length > 0) {
-        render(open[0]);
+        // Keep the admin's explicit selection while that incident is
+        // still active; otherwise fall back to the newest active one.
+        const stillOpen = selectedIncidentId
+          ? open.find((i) => i.incident_id === selectedIncidentId)
+          : null;
+        render(stillOpen || open[0], open);
       } else {
-        const done = all
-          .filter((i) => ["RESOLVED", "CANCELLED"].includes(i.status))
-          .sort((a, b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at));
-        render(done[0] || null);
+        // Nothing open for the control room: hide the panel entirely.
+        // (Closed records stay in the backend + SOS History.)
+        render(null, []);
       }
 
       // Keep the sidebar incident badge in step with the same data.
@@ -205,6 +334,11 @@
 
       if (!res.ok) {
         if (msg) msg.textContent = `Ping failed: ${body.message || res.status}`;
+        window.showAppToast?.(
+          "Rescue request failed",
+          `Could not send the rescue request: ${body.message || res.status}`,
+          "error"
+        );
         pingInFlight = false;
         await refresh();
         return;
@@ -219,14 +353,31 @@
           : data.assigned_team_id
         : "no team assigned yet";
 
-      if (msg) {
-        msg.textContent = body.already_requested
-          ? `Rescue was already requested for ${target.incident_id} (${where}) — ${who}.`
-          : `🚨 Rescue team pinged for ${target.incident_id} — ${where} · ${who}. The Rescue Portal now lists this alert.`;
+      if (body.already_requested) {
+        if (msg) msg.textContent = `Rescue was already requested for ${target.incident_id} (${where}) — ${who}.`;
+        window.showAppToast?.(
+          "Rescue already requested",
+          `Rescue was already requested for ${target.incident_id} — no duplicate request was sent.`,
+          "info"
+        );
+      } else {
+        if (msg) msg.textContent = `🚨 Rescue team pinged for ${target.incident_id} — ${where} · ${who}. The Rescue Portal now lists this alert.`;
+        // Prominent confirmation, shown only after the backend confirmed
+        // the request (never optimistically).
+        window.showAppToast?.(
+          "Rescue request sent",
+          "Rescue team request sent successfully.",
+          "success"
+        );
       }
       addLogEntry("STATUS", "tag-status", `Rescue requested for ${target.incident_id}`);
     } catch (err) {
       if (msg) msg.textContent = `Ping failed: ${err.message}`;
+      window.showAppToast?.(
+        "Rescue request failed",
+        `Could not send the rescue request: ${err.message}`,
+        "error"
+      );
       pingInFlight = false;
       await refresh();
       return;
@@ -263,6 +414,107 @@
     }
   }
 
+  // ── CLOSE ALERT (control room) ───────────────────────────────
+  // Closes the SOS ALERT for this incident's device through the existing
+  // backend mechanism — PATCH /api/alerts/:id/resolve (authenticated route,
+  // same one the alerts page uses). The incident row is NOT modified: the
+  // database record stays (closing incidents is the rescue team's
+  // workflow), but the dashboard panel disappears together with the alert —
+  // see isClosedSosIncident(). Confirmation is required; a backend failure
+  // keeps everything on screen with an error toast.
+  async function closeIncidentAlert() {
+    const incident = currentIncident;
+    if (!incident || closeAlertInFlight) return;
+
+    const device = incident.device_id;
+    const targets = (appState.alerts || []).filter(
+      (a) => !a.ack && (a.isSOS || a.synthetic) && a.belt === device
+    );
+
+    if (targets.length === 0) {
+      window.showAppToast?.(
+        "Nothing to close",
+        `No open SOS alert for ${incident.incident_id}.`,
+        "info"
+      );
+      return;
+    }
+
+    if (
+      !confirm(
+        `Close the SOS alert for ${incident.incident_id} (Belt ${device})?\n\n` +
+          "The alert leaves the dashboard but stays saved in SOS History."
+      )
+    )
+      return;
+
+    closeAlertInFlight = true;
+    const btn = $("dash-close-alert");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "✖ CLOSING…";
+    }
+
+    let failed = 0;
+    for (const alert of targets) {
+      if (!(await resolveAlertOnBackend(alert))) failed++;
+    }
+
+    closeAlertInFlight = false;
+
+    if (failed > 0) {
+      window.showAppToast?.(
+        "Close failed",
+        `Could not close ${failed} SOS alert${failed > 1 ? "s" : ""} — the backend did not confirm. The alert stays on the dashboard.`,
+        "error"
+      );
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "✖ CLOSE ALERT";
+      }
+      return;
+    }
+
+    // Clear the matching full-screen SOS overlay for this device, if open,
+    // so the overlay and the dashboard can never disagree.
+    if (
+      typeof emergencyState !== "undefined" &&
+      emergencyState.activeDeviceIds.has(device)
+    ) {
+      emergencyState.activeDeviceIds.delete(device);
+      delete emergencyState.snapshots[device];
+      if (emergencyState.selectedDeviceId === device) {
+        emergencyState.selectedDeviceId = null;
+      }
+      if (emergencyState.activeDeviceIds.size === 0) {
+        emergencyState.minimized = false;
+      }
+      if (typeof emergencyRefresh === "function") emergencyRefresh();
+    }
+
+    window.showAppToast?.(
+      "SOS alert closed",
+      "SOS alert closed successfully. The record stays in SOS History.",
+      "success"
+    );
+
+    const msg = $("dash-emergency-msg");
+    if (msg) {
+      msg.textContent = `SOS alert closed for ${incident.incident_id} — record kept in SOS History.`;
+    }
+
+    if (typeof addLogEntry === "function") {
+      addLogEntry(
+        "STATUS",
+        "tag-status",
+        `SOS alert closed by ${appState.auth?.username || "control room"} (Belt ${device})`
+      );
+    }
+
+    if (typeof renderAlerts === "function") renderAlerts();
+    refresh(); // re-sync the panel + button state with the backend
+  }
+
   function startPolling() {
     stopPolling();
     refreshTimer = setInterval(refresh, 10000);
@@ -278,6 +530,7 @@
     const viewBtn = $("dash-view-incident");
     if (reqBtn) reqBtn.addEventListener("click", requestRescue);
     if (viewBtn) viewBtn.addEventListener("click", viewIncident);
+    $("dash-close-alert")?.addEventListener("click", closeIncidentAlert);
 
     // Start/stop with the session.
     window.addEventListener("avighnaa:session", (ev) => {
