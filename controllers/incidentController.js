@@ -313,7 +313,12 @@ async function createIncidentFromAlert({
 
     if (lastTerminal) {
       const ageMs = Date.now() - new Date(lastTerminal.updated_at || lastTerminal.created_at).getTime();
-      if (ageMs < INCIDENT_COOLDOWN_MINUTES * 60 * 1000) return null;
+      const sameHazard =
+        !hazardType ||
+        hazardType === "COMBINED" ||
+        lastTerminal.hazard_type === "COMBINED" ||
+        hazardType === lastTerminal.hazard_type;
+      if (sameHazard && ageMs < INCIDENT_COOLDOWN_MINUTES * 60 * 1000) return null;
     }
 
     // ── 4) Create new incident ─────────────────────────────
