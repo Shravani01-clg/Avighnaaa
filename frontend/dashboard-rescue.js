@@ -43,6 +43,12 @@
   // (falls, equipment) have no SOS alert to close, so they keep showing
   // while active.
   function isClosedSosIncident(incident) {
+    // Only an SOS incident can be dismissed by closing its SOS alert. A
+    // gas / fall / flood case stays on the dashboard while it is active —
+    // it has no SOS alert of its own to close, even if the same belt
+    // pressed SOS later (that press now opens its own incident).
+    if (incident.hazard_type !== "SOS") return false;
+
     const alerts = (typeof appState !== "undefined" && appState.alerts) || [];
     const deviceSos = alerts.filter(
       (a) => a.belt === incident.device_id && (a.isSOS || a.synthetic)
@@ -272,15 +278,29 @@
         // Every other active incident stays reachable via the chip row.
         .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
+      // Ids that were already open on the previous poll — used below to
+      // detect a brand-new incident that must take over the panel.
+      const prevIncidentIds = new Set(
+        lastOpenIncidents.map((i) => i.incident_id)
+      );
+
       lastOpenIncidents = open;
 
       if (open.length > 0) {
+        const newest = open[0];
         // Keep the admin's explicit selection while that incident is
-        // still active; otherwise fall back to the newest active one.
+        // still active — but a BRAND-NEW incident always takes over the
+        // panel, so a fresh SOS is never shadowed by an older incident
+        // the admin happened to be looking at (that one stays one click
+        // away in the chip row).
         const stillOpen = selectedIncidentId
           ? open.find((i) => i.incident_id === selectedIncidentId)
           : null;
-        render(stillOpen || open[0], open);
+        const brandNew =
+          newest &&
+          newest.incident_id !== selectedIncidentId &&
+          !prevIncidentIds.has(newest.incident_id);
+        render(brandNew ? newest : stillOpen || newest, open);
       } else {
         // Nothing open for the control room: hide the panel entirely.
         // (Closed records stay in the backend + SOS History.)

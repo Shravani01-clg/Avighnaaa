@@ -248,8 +248,20 @@ async function createIncidentFromAlert({
       limit: 50,
     });
 
+    // Only the SAME hazard on the same device absorbs a new reading.
+    // A fresh SOS must open its own incident even while an older gas /
+    // fall case is still open — the control room needs a new emergency
+    // it can press REQUEST RESCUE on, and the old case must not be
+    // silently rewritten (its hazard + timeline stay intact).
+    // COMBINED readings still subsume every open case on the device
+    // (they describe all hazards at once), and an open COMBINED case
+    // keeps absorbing follow-up readings instead of spawning siblings.
     const open = (existing || []).find(
-      (inc) => !TERMINAL_STATUSES.includes(inc.status)
+      (inc) =>
+        !TERMINAL_STATUSES.includes(inc.status) &&
+        (inc.hazard_type === hazardType ||
+          hazardType === "COMBINED" ||
+          inc.hazard_type === "COMBINED")
     );
 
     const location = await getDeviceLocation(device_id);
@@ -260,17 +272,23 @@ async function createIncidentFromAlert({
 
     // ── 2) Update open incident ────────────────────────────
     if (open) {
+      // An open COMBINED case keeps its hazard + team: follow-up gas /
+      // SOS readings refine the same case instead of downgrading it.
+      const mergedHazard =
+        hazardType === "COMBINED" || open.hazard_type === "COMBINED"
+          ? "COMBINED"
+          : hazardType;
       const updated = await store.update(
         "incidents",
         { id: open.id },
         {
-          hazard_type: hazardType,
-          recommended_team_type: HAZARD_TO_TEAM[hazardType] || open.recommended_team_type,
+          hazard_type: mergedHazard,
+          recommended_team_type: HAZARD_TO_TEAM[mergedHazard] || open.recommended_team_type,
           risk_score: risk.risk_score,
           severity: severityAtLeast(severity, open.severity) ? severity : open.severity,
           alert_id: alertId != null ? String(alertId) : open.alert_id,
           ai_summary: buildAiSummary({
-            hazardType,
+            hazardType: mergedHazard,
             risk,
             personDetected: personDetected || open.person_detected,
             location: locationText,
