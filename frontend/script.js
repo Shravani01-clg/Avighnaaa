@@ -1432,6 +1432,29 @@ async function loadWorkersFromBackend() {
                         d.worker_id === worker.id
                 );
 
+            // A registered worker ALWAYS counts — even when its device
+            // has never reported. The card shows an honest "NO DATA"
+            // state instead of the worker silently vanishing (which made
+            // the dashboard disagree with the backend registry).
+            worker.workerId =
+                worker.worker_id;
+
+            worker.location =
+                worker.mine_location ||
+                "Unknown";
+
+            worker.deviceId =
+                device ? device.device_id : null;
+
+            worker.battery =
+                device ? (device.battery ?? null) : null;
+
+            worker.sensorData = null;
+            worker.sensorHistory = [];
+            worker.connection = deviceConnection(null);
+            worker.clockSkew = false;
+            worker.movement = movementState(null);
+
             if (!device) continue;
 
             const sensorResponse =
@@ -1521,11 +1544,10 @@ async function loadWorkersFromBackend() {
             }
         }
 
-        appState.workers =
-            workers.filter(
-                worker =>
-                    worker.sensorData
-            );
+        // Every registered worker stays in the list; workers whose device
+        // has no usable reading keep sensorData = null (rendered as
+        // NO DATA) instead of being dropped from the dashboard.
+        appState.workers = workers;
 
         // ── Device connection list ─────────────────────────────
         // Every registered device is listed here, INCLUDING devices that
@@ -2877,6 +2899,39 @@ window.openModal =
                 'modal-worker-body'
             );
 
+        // No telemetry yet: show the profile plus an honest notice
+        // instead of the sensor grid (which needs real readings).
+        if (!d) {
+            body.innerHTML = `
+                <div class="detail-grid">
+                    <div
+                        class="detail-item"
+                        style="grid-column: 1 / -1;"
+                    >
+                        <div class="detail-label">
+                            Worker Profile
+                        </div>
+                        <div class="detail-value">
+                            ${worker.name || 'N/A'} ·
+                            ${worker.worker_id || worker.workerId}
+                        </div>
+                    </div>
+                </div>
+
+                <div class="empty-state">
+                    <i data-lucide="radio-tower"></i>
+                    <strong>No telemetry yet</strong>
+                    <span>
+                        This worker's device has not reported any sensor data.
+                    </span>
+                </div>
+            `;
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
+            return;
+        }
+
         body.innerHTML = `
 
             <div class="detail-grid">
@@ -3201,6 +3256,9 @@ function renderModalLiveTracking() {
 
     if (!worker) return;
 
+    // Live tracking needs a real reading — nothing to update otherwise.
+    if (!worker.sensorData) return;
+
     const d = worker.sensorData;
 
     const body =
@@ -3345,6 +3403,14 @@ function evaluateStatus(worker) {
     let status = 'SAFE';
     let risk = 20;
 
+    // Device never reported — thresholds cannot be evaluated at all.
+    if (!d) {
+        return {
+            status: 'NO DATA',
+            risk: null
+        };
+    }
+
     if (
         d.temperature_c >= s.tempCrit ||
         d.gas_raw >= s.gasCrit ||
@@ -3377,6 +3443,8 @@ function getBadgeClass(status) {
         ? 'badge-safe'
         : status === 'WARNING'
         ? 'badge-warning'
+        : status === 'NO DATA'
+        ? 'badge-info'
         : 'badge-critical';
 }
 
@@ -3386,6 +3454,8 @@ function getStatusColor(status) {
         ? 'text-safe'
         : status === 'WARNING'
         ? 'text-warning'
+        : status === 'NO DATA'
+        ? ''
         : 'text-critical';
 }
 
@@ -3727,6 +3797,7 @@ function renderDashboard() {
     let sumTemp = 0;
     let sumGas = 0;
     let sumWater = 0;
+    let liveCount = 0;
 
     appState.workers.forEach(
         worker => {
@@ -3749,6 +3820,9 @@ function renderDashboard() {
 
             const aiRiskColor =
                 aiRiskLevel ===
+                    'NO DATA'
+                    ? ''
+                    : aiRiskLevel ===
                     'CRITICAL' ||
                 aiRiskLevel === 'HIGH'
                     ? 'text-critical'
@@ -3760,14 +3834,49 @@ function renderDashboard() {
             const d =
                 worker.sensorData;
 
-            sumTemp +=
-                d.temperature_c;
+            // Telemetry values are only counted/displayed when the
+            // device actually reported them — never invented.
+            const hasData = !!d;
 
-            sumGas +=
-                d.gas_raw;
+            if (hasData) {
+                sumTemp +=
+                    d.temperature_c;
 
-            sumWater +=
-                d.water_level_cm;
+                sumGas +=
+                    d.gas_raw;
+
+                sumWater +=
+                    d.water_level_cm;
+
+                liveCount++;
+            }
+
+            const beltLabel =
+                hasData
+                    ? d.device_id
+                    : (worker.deviceId || '—');
+
+            const tempLabel =
+                hasData
+                    ? d.temperature_c.toFixed(1)
+                    : '—';
+
+            const gasLabel =
+                hasData
+                    ? Math.round(d.gas_raw)
+                    : '—';
+
+            const waterLabel =
+                hasData
+                    ? d.water_level_cm.toFixed(1)
+                    : '—';
+
+            const tempClass =
+                hasData &&
+                d.temperature_c >=
+                    appState.settings.tempWarn
+                    ? getStatusColor(status)
+                    : '';
 
             // Movement comes from the belt's MPU6050 accelerometer.
             // When a device reports no accelerometer values the state is
@@ -3808,7 +3917,7 @@ function renderDashboard() {
                         </strong>
 
                         <span>
-                            Belt: ${d.device_id}
+                            Belt: ${beltLabel}
                         </span>
 
                         <span>
@@ -3822,7 +3931,7 @@ function renderDashboard() {
                     >
 
                         ${
-                            d.sos
+                            hasData && d.sos
                                 ? '<span class="badge badge-sos">SOS</span>'
                                 : ''
                         }
@@ -3832,11 +3941,15 @@ function renderDashboard() {
                                 ? `<span class="badge ${
                                     worker.connection.online
                                         ? 'badge-safe'
-                                        : 'badge-warning'
+                                        : worker.connection.hasData
+                                        ? 'badge-warning'
+                                        : 'badge-info'
                                 }">${
                                     worker.connection.online
                                         ? 'ONLINE'
-                                        : 'OFFLINE'
+                                        : worker.connection.hasData
+                                        ? 'OFFLINE'
+                                        : 'NO DATA'
                                 }</span>`
                                 : ''
                         }
@@ -3873,26 +3986,13 @@ function renderDashboard() {
                         <span class="metric-value">
 
                             <span
-                                class="${
-                                    d.temperature_c >=
-                                    appState.settings.tempWarn
-                                        ? getStatusColor(
-                                            status
-                                        )
-                                        : ''
-                                }"
+                                class="${tempClass}"
                             >
-                                ${
-                                    d.temperature_c.toFixed(
-                                        1
-                                    )
-                                }&deg;C
+                                ${tempLabel}&deg;C
                             </span>
 
                             /
-                            ${Math.round(
-                                d.gas_raw
-                            )}
+                            ${gasLabel}
 
                         </span>
 
@@ -3905,11 +4005,7 @@ function renderDashboard() {
                         </span>
 
                         <span class="metric-value">
-                            ${
-                                d.water_level_cm.toFixed(
-                                    1
-                                )
-                            }
+                            ${waterLabel}
                             cm
                         </span>
 
@@ -3938,10 +4034,13 @@ function renderDashboard() {
                         <span
                             class="metric-value ${aiRiskColor}"
                         >
-                            ${Math.round(
-                                aiRiskScore
-                            )}
-                            / 100
+                            ${
+                                aiRiskScore == null
+                                    ? '—'
+                                    : `${Math.round(
+                                        aiRiskScore
+                                    )} / 100`
+                            }
                         </span>
 
                     </div>
@@ -3957,10 +4056,12 @@ function renderDashboard() {
             );
 
             card.classList.add(
-                `risk-edge-${(
-                    aiRiskLevel ||
-                    'safe'
-                ).toLowerCase()}`
+                `risk-edge-${
+                    aiRiskLevel &&
+                    aiRiskLevel !== 'NO DATA'
+                        ? aiRiskLevel
+                        : 'safe'
+                }`.toLowerCase()
             );
 
             container.appendChild(
@@ -3981,8 +4082,11 @@ function renderDashboard() {
             <span class="unit">Active</span>`;
     }
 
+    // Averages only over workers whose device actually reported (the
+    // sums above only include real readings — never divide by a
+    // worker that has no data).
     const count =
-        appState.workers.length;
+        liveCount;
 
     if (count === 0) return;
 
@@ -4105,9 +4209,42 @@ function renderWorkersPage() {
                 status === 'SAFE'
             ) {
                 safeCount++;
-            } else {
+            } else if (
+                status !== 'NO DATA'
+            ) {
                 obsCount++;
             }
+
+            // Telemetry cells show "—" unless the device really reported
+            // — the row still appears because the worker is registered.
+            const hasData = !!d;
+
+            const beltLabel =
+                hasData
+                    ? d.device_id
+                    : (worker.deviceId || '—');
+
+            const tempLabel =
+                hasData
+                    ? d.temperature_c.toFixed(1)
+                    : '—';
+
+            const gasLabel =
+                hasData
+                    ? Math.round(d.gas_raw)
+                    : '—';
+
+            const waterLabel =
+                hasData
+                    ? d.water_level_cm.toFixed(1)
+                    : '—';
+
+            const tempClass =
+                hasData &&
+                d.temperature_c >=
+                    appState.settings.tempWarn
+                    ? getStatusColor(status)
+                    : '';
 
             const tr =
                 document.createElement(
@@ -4129,7 +4266,7 @@ function renderWorkersPage() {
                 </td>
 
                 <td class="data-font">
-                    ${d.device_id}
+                    ${beltLabel}
                 </td>
 
                 <td>
@@ -4139,7 +4276,7 @@ function renderWorkersPage() {
                     >
 
                         ${
-                            d.sos
+                            hasData && d.sos
                                 ? '<span class="badge badge-sos">SOS</span>'
                                 : ''
                         }
@@ -4157,34 +4294,17 @@ function renderWorkersPage() {
                 </td>
 
                 <td
-                    class="data-font ${
-                        d.temperature_c >=
-                        appState.settings.tempWarn
-                            ? getStatusColor(
-                                status
-                            )
-                            : ''
-                    }"
+                    class="data-font ${tempClass}"
                 >
-                    ${
-                        d.temperature_c.toFixed(
-                            1
-                        )
-                    }
+                    ${tempLabel}
                 </td>
 
                 <td class="data-font">
-                    ${Math.round(
-                        d.gas_raw
-                    )}
+                    ${gasLabel}
                 </td>
 
                 <td class="data-font">
-                    ${
-                        d.water_level_cm.toFixed(
-                            1
-                        )
-                    }
+                    ${waterLabel}
                 </td>
 
                 <td class="data-font">
@@ -4194,9 +4314,13 @@ function renderWorkersPage() {
                 <td
                     class="data-font ${aiRiskColor}"
                 >
-                    ${Math.round(
-                        aiRiskScore
-                    )}
+                    ${
+                        aiRiskScore == null
+                            ? '—'
+                            : Math.round(
+                                aiRiskScore
+                            )
+                    }
                 </td>
 
             `;
