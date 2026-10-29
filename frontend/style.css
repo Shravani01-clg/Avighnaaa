@@ -2151,6 +2151,36 @@ input[type="number"]:focus {
 
 .btn-emergency-min:hover { background: rgba(255, 77, 77, 0.1); }
 
+/* "Acknowledge & Close" â€” the admin's explicit close action. Solid red so
+   it reads as the primary decision button next to Minimize / Return. */
+.btn-emergency-close {
+    padding: 10px 22px;
+    border-radius: 5px;
+    border: 1px solid var(--emergency-color, #ff4d4d);
+    background: var(--emergency-color, #ff4d4d);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    cursor: pointer;
+}
+
+.btn-emergency-close:hover { filter: brightness(1.1); }
+
+/* Shown on a worker card after the miner released the touch sensor â€”
+   the alert stays open until the admin closes it. */
+.sos-released-chip {
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 196, 0, 0.5);
+    background: rgba(255, 196, 0, 0.12);
+    color: #ffd666;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+}
+
 /* Minimized banner while SOS remains active.
    Anchored bottom-right so it can never cover the dashboard header, the
    navigation, charts or tables â€” it is a small floating indicator with a
@@ -2186,6 +2216,22 @@ input[type="number"]:focus {
     padding-left: 10px;
 }
 
+/* Close action inside the minimized banner â€” acknowledges and saves the
+   alert to SOS History without reopening the full overlay. */
+#emergency-mini-bar .mini-close {
+    border: 1px solid rgba(255, 77, 77, 0.5);
+    background: rgba(255, 77, 77, 0.15);
+    color: #ffb3b3;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 999px;
+    cursor: pointer;
+    margin-left: 2px;
+}
+
+#emergency-mini-bar .mini-close:hover { background: rgba(255, 77, 77, 0.3); color: #fff; }
+
 /* Dim normal dashboard content while the emergency overlay is up.
    When the admin MINIMIZES (returned to the dashboard) only the fixed
    banner stays â€” the dashboard must remain fully usable, so the dim /
@@ -2209,7 +2255,8 @@ body.emergency-active:not(.emergency-fullscreen) .page { transition: padding-bot
     .emergency-footer { flex-direction: column; align-items: stretch; }
     .emergency-footer-actions { flex-direction: column; }
     .emergency-footer-actions .btn-emergency-return,
-    .emergency-footer-actions .btn-emergency-min { width: 100%; }
+    .emergency-footer-actions .btn-emergency-min,
+    .emergency-footer-actions .btn-emergency-close { width: 100%; }
 }
 
 /* Responsive */
@@ -3076,7 +3123,7 @@ body.emergency-active:not(.emergency-fullscreen) .page { transition: padding-bot
 }
 
 /* ==========================================================================
-   CROSS-LOGIN NOTIFICATIONS — bell + dropdown + toasts (notifications.js)
+   CROSS-LOGIN NOTIFICATIONS ï¿½ bell + dropdown + toasts (notifications.js)
    The same widget serves both logins; the backend scopes the feed:
    control room sees "team assigned", rescue portal sees "rescue requested".
    ========================================================================== */
@@ -3222,7 +3269,7 @@ body.emergency-active:not(.emergency-fullscreen) .page { transition: padding-bot
 
 .notif-request .notif-dot { background: var(--color-critical); }
 
-/* Toasts — new notifications arriving while signed in */
+/* Toasts ï¿½ new notifications arriving while signed in */
 #notif-toasts {
     position: fixed;
     right: 18px;
@@ -3324,7 +3371,7 @@ body.emergency-active:not(.emergency-fullscreen) .page { transition: padding-bot
     padding: 14px 16px;
 }
 
-/* Equipment item card — left accent follows the item status */
+/* Equipment item card ï¿½ left accent follows the item status */
 .equip-card {
     border-left: 4px solid var(--border-color);
     transition: background 0.15s ease, border-color 0.15s ease;
@@ -3382,7 +3429,7 @@ body.emergency-active:not(.emergency-fullscreen) .page { transition: padding-bot
 .equip-actions .rescue-note { margin-top: 0; flex-basis: 100%; }
 .equip-actions .rescue-select { min-width: 120px; }
 
-/* Items needing attention — critical wash, same family as inc-card */
+/* Items needing attention ï¿½ critical wash, same family as inc-card */
 .equip-attention {
     border-left: 4px solid var(--color-critical);
     background: linear-gradient(90deg, rgba(196, 62, 62, 0.10), var(--bg-surface) 45%);

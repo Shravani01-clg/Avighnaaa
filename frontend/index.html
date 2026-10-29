@@ -642,6 +642,26 @@
 
                     </div>
 
+
+                    <!-- MOTION STATUS -->
+                    <div class="summary-card">
+
+                        <div class="card-label">
+                            Motion Status
+                        </div>
+
+                        <div
+                            class="card-value"
+                            id="dash-motion-state"
+                        >
+                            --
+                            <span class="unit">
+                                awaiting data
+                            </span>
+                        </div>
+
+                    </div>
+
                 </div>
 
 
@@ -2216,10 +2236,20 @@
         <div class="emergency-footer">
 
             <span class="emergency-note">
-                Minimizing or returning to the dashboard keeps every SOS alert active &mdash; nothing is dismissed, and live updates keep arriving.
+                Minimizing or returning to the dashboard keeps every SOS alert active &mdash; nothing is dismissed, and live updates keep arriving. "Acknowledge &amp; Close" saves each alert (with its details) to SOS History and clears this overlay.
             </span>
 
             <div class="emergency-footer-actions">
+
+                <button
+                    type="button"
+                    class="btn-emergency-close"
+                    id="emergency-close"
+                    onclick="emergencyCloseAlerts()"
+                    title="Acknowledge the SOS alerts, save them to SOS History, and close this overlay"
+                >
+                    Acknowledge &amp; Close
+                </button>
 
                 <button
                     type="button"
@@ -2254,6 +2284,14 @@
         <i data-lucide="siren"></i>
         <span id="emergency-mini-bar-text">SOS ACTIVE</span>
         <span class="mini-restore">Reopen</span>
+        <button
+            type="button"
+            class="mini-close"
+            onclick="event.stopPropagation(); emergencyCloseAlerts()"
+            title="Acknowledge, save to SOS History and close the SOS alert"
+        >
+            &#10005; Close
+        </button>
     </div>
 
 

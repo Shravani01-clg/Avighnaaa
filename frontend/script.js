@@ -463,7 +463,11 @@ const emergencyState = {
     minimized: false,
     // Which active SOS alert the admin is focusing on (null = all).
     // Pure view state — minimizing or switching never touches alert data.
-    selectedDeviceId: null
+    selectedDeviceId: null,
+    // Snapshot of each SOS alert when it fired (deviceId -> info).
+    // The overlay stays open until the ADMIN closes it, so it must keep
+    // showing the full alert even after the miner releases the sensor.
+    snapshots: {}
 };
 
 function emergencyRiskInfo(worker) {
@@ -490,6 +494,26 @@ function emergencyRefresh() {
     affected.forEach(worker => {
         const deviceId = worker.sensorData.device_id;
 
+        // Remember the alert as it looked when it fired — the overlay
+        // stays open after the miner releases the sensor, and the admin
+        // must still see the full original alert until they close it.
+        emergencyState.snapshots[deviceId] = {
+            workerName: worker.name || worker.workerId,
+            workerId: worker.worker_id || worker.workerId,
+            location:
+                worker.mine_location ||
+                worker.location ||
+                'Unknown',
+            reading: worker.sensorData,
+            aiRisk: worker.aiRisk,
+            triggeredAt:
+                emergencyState.snapshots[deviceId]?.triggeredAt ||
+                new Date().toISOString(),
+            releasedLogged:
+                emergencyState.snapshots[deviceId]?.releasedLogged ||
+                false
+        };
+
         if (!emergencyState.activeDeviceIds.has(deviceId)) {
             emergencyState.activeDeviceIds.add(deviceId);
 
@@ -503,6 +527,8 @@ function emergencyRefresh() {
         }
     });
 
+    // SOS RELEASED by the worker: the alert stays open until the admin
+    // acknowledges and closes it — only the release itself is logged.
     [...emergencyState.activeDeviceIds].forEach(deviceId => {
         const stillActive = affected.some(
             worker =>
@@ -510,17 +536,21 @@ function emergencyRefresh() {
         );
 
         if (!stillActive) {
-            emergencyState.activeDeviceIds.delete(deviceId);
+            const snap = emergencyState.snapshots[deviceId];
 
-            addLogEntry(
-                'STATUS',
-                'tag-status',
-                `SOS cleared for Belt ${deviceId}`
-            );
+            if (snap && !snap.releasedLogged) {
+                snap.releasedLogged = true;
+
+                addLogEntry(
+                    'STATUS',
+                    'tag-status',
+                    `SOS released by worker on Belt ${deviceId} — alert stays open until acknowledged`
+                );
+            }
         }
     });
 
-    // Drop the focused alert only if it actually cleared — the admin keeps
+    // Drop the focused alert only if it actually closed — the admin keeps
     // their selection (and the overlay keeps its state) otherwise.
     if (
         emergencyState.selectedDeviceId &&
@@ -537,8 +567,39 @@ function emergencyRefresh() {
     const miniBar =
         document.getElementById('emergency-mini-bar');
 
-    if (affected.length > 0) {
-        renderEmergencyOverlay(affected);
+    // The overlay is driven by what the ADMIN has closed, not by the
+    // touch sensor: live SOS workers first, then devices whose SOS was
+    // released but not yet closed (rendered from the snapshot).
+    const activeCount =
+        emergencyState.activeDeviceIds.size;
+
+    if (activeCount > 0) {
+        const display = [...affected];
+
+        emergencyState.activeDeviceIds.forEach(deviceId => {
+            const live = affected.some(
+                w => w.sensorData?.device_id === deviceId
+            );
+
+            if (live) return;
+
+            const snap = emergencyState.snapshots[deviceId];
+
+            if (!snap) return;
+
+            display.push({
+                name: snap.workerName,
+                workerId: snap.workerId,
+                worker_id: snap.workerId,
+                location: snap.location,
+                mine_location: snap.location,
+                sensorData: snap.reading,
+                aiRisk: snap.aiRisk,
+                sosReleased: true
+            });
+        });
+
+        renderEmergencyOverlay(display);
 
         document.body.classList.add('emergency-active');
 
@@ -557,8 +618,8 @@ function emergencyRefresh() {
 
             if (miniText) {
                 miniText.innerText =
-                    affected.length > 1
-                        ? `SOS ACTIVE · ${affected.length} WORKERS`
+                    activeCount > 1
+                        ? `SOS ACTIVE · ${activeCount} WORKERS`
                         : 'SOS ACTIVE';
             }
         } else {
@@ -589,8 +650,8 @@ function emergencyRefresh() {
 
     if (countEl) {
         countEl.innerText =
-            `${affected.length} worker${
-                affected.length === 1 ? '' : 's'
+            `${activeCount} worker${
+                activeCount === 1 ? '' : 's'
             } affected`;
     }
 
@@ -692,6 +753,12 @@ function emergencyRefresh() {
                         <i data-lucide="radio"></i>
                         SOS ACTIVE
                     </span>
+
+                    ${
+                        worker.sosReleased
+                            ? '<span class="sos-released-chip">SOS released — alert kept open until you close it</span>'
+                            : ''
+                    }
 
                 </div>
 
@@ -973,6 +1040,45 @@ window.emergencyReturnToDashboard = function () {
     emergencyRefresh();
 };
 
+/**
+ * "Acknowledge & Close" — the ADMIN's decision to close the SOS alert.
+ *
+ * Real alerts are resolved via the backend (PATCH /api/alerts/:id/resolve)
+ * so the record — device, worker, times, resolution — is saved and shows
+ * up in SOS History and the alerts page; the client-only fallback alert is
+ * acknowledged locally. Only then does the overlay close.
+ */
+window.emergencyCloseAlerts = async function () {
+    const devices = [...emergencyState.activeDeviceIds];
+
+    if (devices.length === 0) return;
+
+    const sosAlerts = appState.alerts.filter(
+        a => !a.ack && a.isSOS && devices.includes(a.belt)
+    );
+
+    for (const alert of sosAlerts) {
+        logAlertAsEvent(alert);
+        await resolveAlertOnBackend(alert);
+    }
+
+    emergencyState.activeDeviceIds.clear();
+    emergencyState.snapshots = {};
+    emergencyState.selectedDeviceId = null;
+    emergencyState.minimized = false;
+
+    addLogEntry(
+        'STATUS',
+        'tag-status',
+        `SOS acknowledged and closed by ${
+            appState.auth.username || 'control room'
+        } for Belt ${devices.join(', ')}`
+    );
+
+    renderAlerts();
+    emergencyRefresh();
+};
+
 // ==========================================================================
 // Backend
 // ==========================================================================
@@ -1066,7 +1172,15 @@ async function loadAlertsFromBackend() {
         const result =
             await response.json();
 
+        // Synthetic client-only alerts (the SOS fallback) have no backend
+        // row — keep the unacknowledged ones across polls so the SOS alert
+        // stays on the dashboard until the admin acknowledges it.
+        const pendingSynthetic = appState.alerts.filter(
+            a => a.synthetic && !a.ack
+        );
+
         appState.alerts =
+            pendingSynthetic.concat(
             (result.data || []).map(alert => {
 
                 const severityUpper =
@@ -1111,7 +1225,8 @@ async function loadAlertsFromBackend() {
 
                     ack: alert.is_resolved
                 };
-            });
+            })
+            );
 
         console.log(
             `Loaded ${appState.alerts.length} alerts`
@@ -3789,6 +3904,14 @@ function renderDashboard() {
                 `00 <span class="unit">Active</span>`;
         }
 
+        const motionEmpty =
+            document.getElementById('dash-motion-state');
+
+        if (motionEmpty) {
+            motionEmpty.innerHTML =
+                'Unavailable <span class="unit">no workers registered</span>';
+        }
+
         lucide.createIcons();
 
         return;
@@ -4080,6 +4203,27 @@ function renderDashboard() {
                 .toString()
                 .padStart(2, '0')}
             <span class="unit">Active</span>`;
+    }
+
+    // Motion card — real accelerometer state from the belt's MPU6050
+    // (worker.movement). "Unavailable" means no motion sensor data has
+    // ever arrived — it is never reported as still or moving.
+    const motionEl =
+        document.getElementById('dash-motion-state');
+
+    if (motionEl) {
+        const moves = appState.workers
+            .map(w => w.movement)
+            .filter(Boolean);
+
+        const anyActive = moves.some(m => m.active);
+        const anyData = moves.some(m => m.hasData);
+
+        motionEl.innerHTML = anyActive
+            ? 'Detected <span class="unit">movement</span>'
+            : anyData
+            ? 'None <span class="unit">worker still</span>'
+            : 'Unavailable <span class="unit">no motion sensor data</span>';
     }
 
     // Averages only over workers whose device actually reported (the
@@ -4518,7 +4662,11 @@ function renderAlerts() {
                     `
                     : '';
 
+            // The dashboard shows only ONGOING (unacknowledged) alerts —
+            // once the admin acknowledges one it leaves the dashboard and
+            // stays recorded on the alerts page and in SOS History.
             if (
+                !alert.ack &&
                 dashContainer.children.length <
                 3
             ) {
